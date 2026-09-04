@@ -1,5 +1,7 @@
 """Self-contained visual index pairing every prompt with the asset it produced."""
-import json, html, os, collections, re
+import json, html, os, collections, re, sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 ds = json.load(open("dataset.json"))
 man = json.load(open("assets/manifest.json"))
@@ -10,6 +12,7 @@ for m in man:
         by_rec[m["record_id"]].append(m)
 
 import assets as A
+
 cards = []
 for r in ds:
     rid = A.record_id(r)
@@ -17,6 +20,10 @@ for r in ds:
     if not shots:
         continue
     cards.append((r, rid, shots))
+
+def esc_full(t):
+    """Escape without collapsing whitespace — prompts carry meaningful line breaks."""
+    return html.escape(str(t or "").strip())
 
 def esc(t, n=None):
     t = re.sub(r'\s+', ' ', str(t or "")).strip()
@@ -50,8 +57,12 @@ main{{padding:18px 20px 60px}}
 .card{{background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden;
 display:flex;flex-direction:column}}
 .shots{{display:flex;gap:2px;background:#0a0c10}}
-.shots img{{flex:1;min-width:0;aspect-ratio:1/1;object-fit:cover;display:block;background:#0a0c10}}
-.shots img:only-child{{aspect-ratio:16/10}}
+.shots a,.shots span.sh{{flex:1;min-width:0;position:relative;display:block;line-height:0}}
+.shots img{{width:100%;aspect-ratio:1/1;object-fit:cover;display:block;background:#0a0c10}}
+.shots a:only-child img,.shots span.sh:only-child img{{aspect-ratio:16/10}}
+.shots a:hover img{{opacity:.82}}
+.badge{{position:absolute;left:6px;bottom:6px;font-size:10px;line-height:1.4;color:#fff;
+background:rgba(0,0,0,.62);border-radius:4px;padding:1px 5px;pointer-events:none}}
 .body{{padding:11px 13px 13px}}
 .nm{{font-weight:650;font-size:13px;margin-bottom:5px}}
 .pr{{color:#c8cede;font-size:12px;line-height:1.5;max-height:8.2em;overflow:auto;
@@ -62,12 +73,20 @@ white-space:pre-wrap;word-break:break-word}}
 a.src{{display:block;margin-top:8px;font-size:10.5px}}
 a.src{{color:#6f79a0;text-decoration:none;word-break:break-all}}
 a.src:hover{{color:var(--acc)}}
+.bar{{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:9px}}
+button.cp{{background:var(--card);color:var(--mut);border:1px solid var(--line);border-radius:7px;
+padding:4px 9px;font-size:11px;font-family:inherit;cursor:pointer}}
+button.cp:hover{{border-color:var(--acc);color:var(--ink)}}
+button.cp.ok{{color:#7ee0a8;border-color:#2f6b4a}}
+.rid{{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;color:#5f6880;
+user-select:all}}
 .count{{color:var(--mut);font-size:12px;margin:0 0 12px}}
 .hidden{{display:none}}
 </style></head><body>
 <header>
 <h1>Higgsfield Prompt Gallery</h1>
-<div class="sub">Every prompt beside what it generated · {len(cards)} records · thumbnails are 512px WebP; run <code>tools/download_assets.py</code> for originals</div>
+<div class="sub">Every prompt beside what it generated · {len(cards)} of {len(ds)} records (the rest have no paired asset) ·
+click a thumbnail for the full-resolution original · thumbnails are 512px WebP, run <code>tools/download_assets.py</code> to fetch originals in bulk</div>
 <div class="controls">
 <input type="search" id="q" placeholder="Search prompt text, name, model…">
 <select id="tool"><option value="">All tool types</option>{''.join(f'<option>{esc(t)}</option>' for t in tools)}</select>
@@ -76,10 +95,19 @@ a.src:hover{{color:var(--acc)}}
 </div></header><main>
 <p class="count" id="count"></p><div class="grid" id="grid">""")
 
+def shot_html(s, alt):
+    """Thumbnail, linked to the full-resolution original where we have its URL."""
+    img = f'<img loading="lazy" src="{esc(s["thumb_path"])}" alt="{alt}">'
+    badge = '<span class="badge">video</span>' if s.get("asset_type") == "video" else ""
+    url = s.get("full_res_url") or s.get("poster_url")
+    if not url:
+        return f'<span class="sh">{img}{badge}</span>'
+    return (f'<a href="{esc(url)}" target="_blank" rel="noopener" '
+            f'title="Open the full-resolution original">{img}{badge}</a>')
+
 for r, rid, shots in cards:
-    imgs = "".join(
-        f'<img loading="lazy" src="{esc(s["thumb_path"])}" alt="{esc(r.get("name") or "sample")}">'
-        for s in shots[:4])
+    alt = esc(r.get("name") or "sample")
+    imgs = "".join(shot_html(s, alt) for s in shots[:4])
     txt = r.get("prompt_text") or r.get("description") or ""
     tags = []
     if r.get("model_or_effect"):
@@ -89,16 +117,21 @@ for r, rid, shots in cards:
         if v:
             for part in str(v).split("; ")[:2]:
                 tags.append(f'<span class="t">{esc(part)}</span>')
+    if r.get("asset_type"):
+        tags.append(f'<span class="t">{esc(r["asset_type"])}</span>')
     if len(shots) > 1:
         tags.append(f'<span class="t">{len(shots)} samples</span>')
+    # presets can carry no prompt and no description — don't offer a no-op button
+    copy_btn = ('<button class="cp" type="button">Copy prompt</button>' if txt.strip() else "")
     hay = esc(((r.get("name") or "") + " " + txt + " " + (r.get("model_or_effect") or "")).lower(), 900)
     W(f'''<article class="card" data-tool="{esc(r.get("tool_type") or "Other")}"
  data-model="{esc(r.get("model_or_effect") or "Unspecified")}"
  data-pair="{esc(r.get("media_pairing") or "")}" data-h="{hay}">
 <div class="shots">{imgs}</div><div class="body">
 <div class="nm">{esc(r.get("name") or r.get("tool_type") or "Prompt")}</div>
-<div class="pr">{esc(txt, 1200)}</div>
+<div class="pr">{esc_full(txt)}</div>
 <div class="tags">{"".join(tags)}</div>
+<div class="bar">{copy_btn}<span class="rid" title="Join key for manifest.csv and the CSV/Excel/JSON exports">{rid}</span></div>
 <a class="src" href="{esc(r.get("source_url"))}" target="_blank" rel="noopener">{esc(r.get("source_url"))}</a>
 </div></article>''')
 
@@ -116,6 +149,24 @@ function apply(){
  cnt.textContent=n+' of '+cards.length+' records shown';
 }
 [q,tool,mdl,pair].forEach(e=>e.addEventListener('input',apply));apply();
+
+function copyText(t){
+ if(navigator.clipboard&&window.isSecureContext) return navigator.clipboard.writeText(t);
+ return new Promise((res,rej)=>{                       // file:// fallback
+  const ta=document.createElement('textarea');
+  ta.value=t; ta.setAttribute('readonly',''); ta.style.position='fixed'; ta.style.top='-1000px';
+  document.body.appendChild(ta); ta.select();
+  const ok=document.execCommand('copy'); document.body.removeChild(ta);
+  ok?res():rej();
+ });
+}
+document.getElementById('grid').addEventListener('click',e=>{
+ const b=e.target.closest('button.cp'); if(!b) return;
+ const t=b.closest('.card').querySelector('.pr').textContent;
+ const done=(msg,cls)=>{b.textContent=msg; if(cls)b.classList.add(cls);
+  setTimeout(()=>{b.textContent='Copy prompt';b.classList.remove('ok');},1300);};
+ copyText(t).then(()=>done('Copied \u2713','ok')).catch(()=>done('Press \u2318/Ctrl+C'));
+});
 </script></body></html>""")
 
 os.makedirs("assets", exist_ok=True)

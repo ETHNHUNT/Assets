@@ -1,12 +1,24 @@
-import json, csv, collections, os
+import json, csv, collections, os, sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from assets import record_id
+
+def stamp(r):
+    """Attach the join key, idempotently — dataset.json may already carry one."""
+    r = {k: v for k, v in r.items() if k != "record_id"}
+    return {"record_id": record_id(r), **r}
 
 d = json.load(open("dataset.json"))
 OUT = "deliverables"
 os.makedirs(OUT, exist_ok=True)
 
+# The join key is the same SHA-1 used to name the thumbnails, so record_id joins
+# these files to assets/manifest.csv and to assets/thumbs/<record_id>__<n>.webp.
+d = [stamp(r) for r in d]
+
 COLS = [
-    ("record_type", "Record Type"), ("name", "Name"), ("prompt_text", "Prompt Text"),
-    ("description", "Description"), ("model_or_effect", "Model / Motion Effect"),
+    ("record_id", "Record ID"), ("record_type", "Record Type"), ("name", "Name"),
+    ("prompt_text", "Prompt Text"), ("description", "Description"), ("model_or_effect", "Model / Motion Effect"),
     ("tool_type", "Tool Type"), ("generation_style", "Generation Style"),
     ("visual_subject", "Visual Subject"), ("category", "Category"),
     ("preset_name", "Preset"), ("aspect_ratio", "Aspect Ratio"),
@@ -58,6 +70,9 @@ with open(f"{OUT}/higgsfield_summary.csv", "w", newline="", encoding="utf-8-sig"
         for k, v in counts(key, sp):
             wr.writerow([k, v])
         wr.writerow([])
+with open(f"{OUT}/higgsfield_prompt_dataset.json", "w", encoding="utf-8") as f:
+    json.dump(d, f, ensure_ascii=False, indent=1)
+
 print("CSV files written")
 for fn in sorted(os.listdir(OUT)):
     print(" ", fn, os.path.getsize(os.path.join(OUT, fn)), "bytes")

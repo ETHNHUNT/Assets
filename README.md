@@ -229,9 +229,9 @@ Patterns that recur across the high-fidelity records:
 
 | File | Format | Contents |
 |---|---|---|
-| `assets/gallery.html` | HTML | **Visual index** — every prompt beside what it generated, with search and filters by tool, model and pairing method |
+| `assets/gallery.html` | HTML | **Visual index** — the 2,619 records with a paired asset, each prompt beside what it generated. Search and filters by tool, model and pairing method; copy any prompt to the clipboard; click a thumbnail for the full-resolution original |
 | `data/higgsfield_prompt_dataset.xlsx` | Excel | 4 sheets — All Records, Prompts, Presets and Effects, Summary |
-| `data/higgsfield_prompts_full.csv` | CSV | All 2,747 records, 32 columns, UTF-8 BOM + fully quoted |
+| `data/higgsfield_prompts_full.csv` | CSV | All 2,747 records, 31 columns, UTF-8 BOM + fully quoted |
 | `data/higgsfield_prompts_only.csv` | CSV | The 2,209 literal prompts |
 | `data/higgsfield_presets_effects.csv` | CSV | The 538 presets / motion effects |
 | `data/higgsfield_summary.csv` | CSV | Cross-tabs by tool, model, style, subject, section, source, confidence |
@@ -240,23 +240,71 @@ Patterns that recur across the high-fidelity records:
 | `assets/manifest.csv` / `.json` | CSV/JSON | Every asset: record, role, type, full-res URL, poster, thumbnail path |
 | `assets/thumbs/*.webp` | WebP | 5,144 thumbnails (99 MB) |
 
+### Joining the files
+
+Every record carries a stable **`record_id`** — the first column of each CSV, the first key of each
+JSON record, the first column of every Excel sheet, and the key `assets/manifest.csv` is built on.
+It is also the thumbnail filename stem: `assets/thumbs/<record_id>__<n>.webp`. So filtering the
+spreadsheet down to the prompts you want and then pulling their assets is a straight join:
+
+```python
+import csv, collections
+rows = list(csv.DictReader(open("data/higgsfield_prompts_full.csv", encoding="utf-8-sig")))
+man  = collections.defaultdict(list)
+for m in csv.DictReader(open("assets/manifest.csv", encoding="utf-8-sig")):
+    man[m["record_id"]].append(m)
+
+picks = [r for r in rows if r["Model / Motion Effect"] == "Sora 2"]
+urls  = [a["full_res_url"] for r in picks for a in man[r["Record ID"]]]
+```
+
+The gallery prints the same id under each card, so a record you find by eye is one search away in
+the spreadsheet.
+
 ---
 
 ## 7. Reproducing
 
+Every script is run **from the repository root** — they resolve `assets/`, `deliverables/` and
+their intermediates relative to the working directory, not to `tools/`.
+
+The crawl stage needs two inputs in the working directory that are not build outputs: the site's
+`robots.txt` (fetched fresh, so the live rules are the ones enforced) and `known4.txt`, the
+already-seen URL set that link discovery diffs against.
+
 ```bash
-cd tools
-python3 crawl.py all_urls.txt      # fetch corpus        -> pages/
-python3 discover.py                # link discovery
-python3 master.py                  # 7 extractors        -> raw_rows.jsonl
-python3 clean.py                   # dedupe + categorise -> dataset.json
-python3 assets.py --width 512 --max-extra 4   # manifest + thumbnails
-python3 build_gallery.py && python3 build_csv.py && python3 build_xlsx.py && python3 build_pdf.py
-python3 verify.py                  # end-to-end checks
+cd /path/to/this/repo
+
+# --- crawl (needs network; skip if you only want to rebuild the deliverables) ---
+curl -s https://higgsfield.ai/robots.txt -o robots.txt
+cp data/known4.txt .
+python3 tools/crawl.py data/all_urls.txt        # fetch corpus        -> pages/
+python3 tools/discover.py                       # link discovery      -> discovered.txt
+python3 tools/master.py                         # 7 extractors        -> raw_rows.jsonl
+python3 tools/clean.py                          # dedupe + categorise -> dataset.json
+
+# --- rebuild the deliverables from dataset.json ---
+cp data/higgsfield_prompt_dataset.json dataset.json   # or use the one clean.py just wrote
+python3 tools/assets.py --width 512 --max-extra 4     # -> assets/manifest.* + assets/thumbs/
+python3 tools/build_gallery.py                        # -> assets/gallery.html
+python3 tools/build_csv.py                            # -> deliverables/*.csv + .json
+python3 tools/build_xlsx.py                           # -> deliverables/*.xlsx
+python3 tools/build_pdf.py                            # -> deliverables/*.pdf
+python3 tools/verify.py                               # end-to-end checks
 ```
 
-Crawl and extraction use only the standard library; `openpyxl`, `reportlab` and `Pillow` are needed
-for the Excel, PDF and thumbnail-validation steps.
+`build_csv.py`, `build_xlsx.py` and `build_pdf.py` write into `deliverables/`; the committed copies
+live in `data/`, so move them across when you are happy with a rebuild. `crawl.py`, `discover.py`,
+`master.py` and `clean.py` leave their intermediates (`pages/`, `discovered.txt`,
+`raw_rows.jsonl`, `dataset.json`) in the working directory — none of them are committed.
+
+Crawl and extraction use only the standard library. The build steps need:
+
+```bash
+pip install openpyxl        # build_xlsx.py
+pip install reportlab       # build_pdf.py
+pip install Pillow          # assets.py thumbnails, verify.py image checks
+```
 
 ---
 

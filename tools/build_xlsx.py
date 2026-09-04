@@ -1,12 +1,21 @@
-import json, collections
+import json, collections, os, sys
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from assets import record_id
+
+def stamp(r):
+    """Attach the join key, idempotently — dataset.json may already carry one."""
+    r = {k: v for k, v in r.items() if k != "record_id"}
+    return {"record_id": record_id(r), **r}
+
 d = json.load(open("dataset.json"))
-COLS = [("record_type","Record Type",14),("name","Name",26),("prompt_text","Prompt Text",90),
-        ("description","Description",48),("model_or_effect","Model / Motion Effect",22),
+d = [stamp(r) for r in d]
+COLS = [("record_id","Record ID",18),("record_type","Record Type",14),
+        ("name","Name",26),("prompt_text","Prompt Text",90),("description","Description",48),("model_or_effect","Model / Motion Effect",22),
         ("tool_type","Tool Type",24),("generation_style","Generation Style",30),
         ("visual_subject","Visual Subject",30),("category","Category",18),
         ("preset_name","Preset",18),("aspect_ratio","Aspect Ratio",12),
@@ -38,12 +47,12 @@ def sheet(ws, rows, name):
         ws.append([r.get(k) for k, _, _ in COLS])
     for i, (k, h, wdt) in enumerate(COLS, start=1):
         ws.column_dimensions[get_column_letter(i)].width = wdt
-    ws.freeze_panes = "C2"
+    ws.freeze_panes = "D2"
     ws.row_dimensions[1].height = 26
     n = len(rows) + 1
     for row in ws.iter_rows(min_row=2, max_row=n, max_col=len(COLS)):
         for cell in row:
-            cell.alignment = Alignment(vertical="top", wrap_text=(cell.column in (3, 4, 7, 8)))
+            cell.alignment = Alignment(vertical="top", wrap_text=(cell.column in (4, 5, 8, 9)))
             cell.border = BORDER
     if n > 1:
         t = Table(displayName=name.replace(" ", "").replace("/", "").replace("-", "")[:28] + "Tbl",
