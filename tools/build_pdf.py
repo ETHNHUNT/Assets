@@ -1,4 +1,6 @@
-import json, collections, html, re
+import json, collections, html, re, os, sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.lib import colors
@@ -10,7 +12,7 @@ from reportlab.lib.enums import TA_LEFT
 d = json.load(open("dataset.json"))
 
 # thumbnails, keyed by record, so each prompt can show what it produced
-import os, collections as _c
+import collections as _c
 import assets as _A
 _thumbs = _c.defaultdict(list)
 try:
@@ -185,6 +187,7 @@ for tool in sorted(bytool, key=lambda k: -len(bytool[k])):
             blk.append(Paragraph(esc(r["prompt_text"], 1400), S["prompt"]))
         if r.get("description"):
             blk.append(Paragraph("<b>Creates:</b> " + esc(r["description"], 600), S["body"]))
+        bits.append(_A.record_id(r))
         meta = " &nbsp;•&nbsp; ".join(esc(b, 90) for b in bits)
         blk.append(Paragraph(f"{meta}<br/><font color='#4F46E5'>{esc(r['source_url'])}</font>",
                              S["meta"]))

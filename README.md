@@ -11,9 +11,9 @@ Excel/CSV dataset, a browsable HTML gallery, and a print-ready PDF.
 | **Records extracted** | **2,747** |
 | — literal prompts | 2,209 |
 | — presets / motion effects | 538 |
-| **Records with a paired asset** | 2,622 (95.4%) |
+| **Records with a paired asset** | 2,622 (95.4%) — 2,619 of them with a committed thumbnail |
 | **Assets catalogued** | 4,953 |
-| **Thumbnails committed** | 5,144 WebP (99 MB) |
+| **Thumbnails committed** | 5,144 WebP (110 MB) |
 | **Prompt text captured** | ~2.29M characters |
 | **Prompt length** | 4–3,282 words (median 99) |
 | **Crawl date** | 2026-09-04 |
@@ -86,13 +86,17 @@ filtered out:
 | proximity | 331 |
 | lesson | 181 |
 | figure | 92 |
+| *(asset carried on the record itself, no inference)* | 78 |
+| **Total with an asset** | **2622** |
 
-- **exact** / **preset-preview** — the asset came from the record's own `media:{rawUrl, source,
-  thumbnail, width, height}` block or the preset's `<video>` preview. Unambiguous.
+- **preset-preview** — the asset is the preset's own `<video>` preview. Unambiguous.
 - **payload-proximity** / **proximity** — nearest media to the prompt inside the payload or the DOM.
   Right in the large majority of spot-checks, but inferred.
 - **lesson** — the academy lesson video the prompt's shot appears in (with a timestamp).
 - **figure** — the `<figure>` element the caption belongs to.
+- The 78 unlabelled records took their asset straight from their own
+  `media:{rawUrl, source, thumbnail, width, height}` block, so there was no pairing decision to
+  record.
 
 A shared filter (`tools/assetfilter.py`) rejects site furniture — profile avatars and banners,
 country flags, logos, placeholder thumbnails — so decorative images aren't passed off as samples.
@@ -298,12 +302,10 @@ live in `data/`, so move them across when you are happy with a rebuild. `crawl.p
 `master.py` and `clean.py` leave their intermediates (`pages/`, `discovered.txt`,
 `raw_rows.jsonl`, `dataset.json`) in the working directory — none of them are committed.
 
-Crawl and extraction use only the standard library. The build steps need:
+Crawl and extraction use only the standard library. The build steps need three packages:
 
 ```bash
-pip install openpyxl        # build_xlsx.py
-pip install reportlab       # build_pdf.py
-pip install Pillow          # assets.py thumbnails, verify.py image checks
+pip install -r requirements.txt   # Pillow, openpyxl, reportlab
 ```
 
 ---
@@ -331,7 +333,9 @@ Stated plainly rather than papered over:
    correct, but filter on `media_pairing` if you need only exact pairs.
 5. **Mixed-media presets have boilerplate descriptions.** The site serves a generic string for them;
    it is nulled out rather than presented as a real description.
-6. **125 records have no asset** — chiefly article prompts with no nearby image.
+6. **125 records have no asset at all** — chiefly article prompts with no nearby image. A further
+   three have a full-resolution URL but no committed thumbnail (the fetch failed at build time), so
+   the gallery, which is driven by thumbnails, shows 2,619 of the 2,622 paired records.
 
 ---
 
