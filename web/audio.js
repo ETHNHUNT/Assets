@@ -32,6 +32,9 @@ export class AtlasAudio {
       this.ctx = new AC();
       this._build();
     }
+    // ?audio=0 keeps the atlas silent and never resumes the context, so a
+    // headless run does not need an audio device.
+    if (new URLSearchParams(location.search).get('audio') === '0') { this.on = false; return false; }
     this.on = !this.on;
     if (this.on && this.ctx.state === 'suspended') await this.ctx.resume();
     const t = this.ctx.currentTime;

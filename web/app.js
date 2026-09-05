@@ -21,6 +21,34 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { animate, createSpring } from 'animejs';
 import { AtlasAudio } from './audio.js';
 
+// --------------------------------------------------------------- flags ------
+/**
+ * Subsystem switches, read once from the query string. Every one of these turns
+ * something OFF, so the default URL is the full experience and a flag can only
+ * subtract — which is what makes them safe to leave in.
+ *
+ *   ?webgl      force the WebGL2 backend instead of WebGPU
+ *   ?lod=off    no runtime high-res detail cache; base atlas only
+ *   ?dust=0     no ambient particles (they are seeded with Math.random() and
+ *               rotate every frame, so they have to go for a stable capture)
+ *   ?bloom=0    no bloom contribution
+ *   ?audio=0    no procedural sound, and no audio context at all
+ *   ?physics=0  physics mode refuses to start
+ *
+ * tools/verify_web.py drives the page with dust, audio and physics off so a
+ * frame is reproducible; nothing else depends on them.
+ */
+const PARAMS = new URLSearchParams(location.search);
+const off = (k) => { const v = PARAMS.get(k); return v === '0' || v === 'off' || v === 'false'; };
+const FLAGS = {
+  webgl: PARAMS.has('webgl'),
+  lod: !off('lod'),
+  dust: !off('dust'),
+  bloom: !off('bloom'),
+  audio: !off('audio'),
+  physics: !off('physics'),
+};
+
 // ---------------------------------------------------------------- boot ------
 const $ = (s) => document.querySelector(s);
 const lbar = $('#lbar'), lmsg = $('#lmsg');
@@ -42,6 +70,33 @@ const audio = new AtlasAudio();
  * material never reads it.
  */
 let aMeta, aFromPD, aToPos, aQuatA, aQuatB;
+/**
+ * Per-instance buffer layout — the whole of it, in one place.
+ *
+ * WebGPU guarantees only 8 vertex buffers, and the geometry already spends two
+ * (position, uv), so every per-instance value is packed into five vec4s rather
+ * than given an attribute of its own. Nothing here is spare: adding a sixth
+ * attribute means repacking, not appending.
+ *
+ *   aMeta    .x  atlas cell index          .y  dim   0 filtered out .. 1 lit
+ *            .z  focus 0 .. 1 (hover+select) .w  detail slot, -1 = base atlas
+ *   aFromPD  .xyz  morph START position     .w  this tile's stagger delay 0 .. 1
+ *   aToPos   .xyz  morph END position       .w  detail cross-fade 0 .. 1
+ *   aQuatA   .xyzw morph START orientation
+ *   aQuatB   .xyzw morph END orientation
+ *
+ * The shader interpolates A->B by a global uMorph, offset by each tile's own
+ * delay, so a re-arrangement is a wave rather than a jump and costs no CPU per
+ * frame. Which means: a tile's drawn position is NOT instanceMatrix (that stays
+ * identity) and is not posCur either while a morph is in flight — it is the
+ * interpolation of these two buffers. bakeCurrent() is what collapses the two
+ * back into one, and __atlas.positions exposes posCur for tests that need it.
+ *
+ * OWNERSHIP: exactly one system writes these per frame — MorphController while a
+ * layout is settling, PhysicsWorld while physics runs. The handoff is
+ * bakeCurrent() on the way in and writeMatrices() on the way out; anything that
+ * writes them from a third place is a bug.
+ */
 const M_CELL = 0, M_DIM = 1, M_FOCUS = 2, M_DETAIL = 3;
 const uMorph = uniform(1);                  // 0 = at A, 1 = at B; the shader staggers per tile
 const STAGGER = 0.34;                       // fraction of the timeline given over to the wave
@@ -142,7 +197,53 @@ async function boot() {
         rt.dispose();
         return { pixels: buf.length / 4, lit, litPct: +(100 * lit / (buf.length / 4)).toFixed(1),
                  meanRGB: +(sum / (buf.length / 4) / 3).toFixed(1) };
-      } };
+      },
+
+      /**
+       * A perceptual fingerprint of the current frame: mean luma over a cells x
+       * cells grid, quantised to 0-255.
+       *
+       * Comparing frames byte-for-byte is useless here — a software rasteriser
+       * and a real GPU disagree in the low bits of every antialiased edge — but
+       * a coarse luma grid is stable across both while still moving the moment a
+       * tile lands somewhere else. That is exactly the regression a refactor of
+       * the layout or morph path can introduce.
+       *
+       * `n` must keep bytesPerRow a multiple of 256, i.e. a multiple of 64.
+       */
+      async signature(n = 512, cells = 16) {
+        const rt = new THREE.RenderTarget(n, n);
+        renderer.setRenderTarget(rt);
+        if (pipeline) pipeline.render(); else renderer.render(scene, camera);
+        renderer.setRenderTarget(null);
+        const buf = await renderer.readRenderTargetPixelsAsync(rt, 0, 0, n, n);
+        rt.dispose();
+        const cell = n / cells, out = new Array(cells * cells).fill(0);
+        for (let y = 0; y < n; y++) {
+          const cy = Math.min(cells - 1, (y / cell) | 0);
+          for (let x = 0; x < n; x++) {
+            const i = (y * n + x) * 4;
+            const luma = 0.2126 * buf[i] + 0.7152 * buf[i + 1] + 0.0722 * buf[i + 2];
+            out[cy * cells + Math.min(cells - 1, (x / cell) | 0)] += luma;
+          }
+        }
+        const per = cell * cell;
+        return out.map((v) => Math.round(v / per));
+      },
+
+      /** Drive a layout from a test without going through the DOM. */
+      setLayout(m, instant = true) { layout(m, instant); },
+      /** Place the camera deterministically — OrbitControls damping never settles on its own. */
+      park(x, y, z) {
+        camera.position.set(x, y, z);
+        controls.target.set(0, 0, 0);
+        controls.update();
+        camera.updateMatrixWorld(true);
+      },
+      get settled() { return morph >= 1 && !morphAnim; },
+      get flags() { return { ...FLAGS }; },
+      get counts() { return { instances: N, active: active.reduce((a, v) => a + v, 0) }; },
+    };
     step(100, 'ready');
     setTimeout(() => $('#load').classList.add('gone'), 260);
     renderer.setAnimationLoop(tick);
@@ -160,7 +261,7 @@ async function boot() {
 async function initRenderer() {
   // ?webgl=1 forces the fallback path — used to verify both backends render
   // identically, since headless screenshots cannot capture a WebGPU swapchain.
-  const forceWebGL = new URLSearchParams(location.search).has('webgl');
+  const forceWebGL = FLAGS.webgl;
   renderer = new THREE.WebGPURenderer({ antialias: true, alpha: false, forceWebGL });
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   renderer.setSize(innerWidth, innerHeight);
@@ -367,8 +468,7 @@ function buildScene() {
   geo.setAttribute('aQuatB', aQuatB);
 
   // must precede tileMaterial(): the material samples DETAIL if it exists
-  const lodOff = new URLSearchParams(location.search).get('lod') === 'off';
-  if (!lodOff) buildDetailCache();
+  if (FLAGS.lod) buildDetailCache();
 
   mesh = new THREE.InstancedMesh(geo, tileMaterial(), N);
   mesh.frustumCulled = false;
@@ -384,7 +484,7 @@ function buildScene() {
 
   active = new Uint8Array(N).fill(1);
   layout('grid', true);
-  addDust();
+  if (FLAGS.dust) addDust();
 }
 
 function tileMaterial() {
@@ -502,6 +602,7 @@ function buildPipeline() {
 }
 
 function setBloom(on) {
+  if (!FLAGS.bloom) on = false;          // ?bloom=0 — the toggle cannot turn it back on
   bloomOn = on;
   if (bloomPass) bloomPass.strength.value = on ? 1.15 : 0.0;
   const b = $('#bloom');
@@ -933,6 +1034,7 @@ function simdSupported() {
 }
 
 async function startPhysics() {
+  if (!FLAGS.physics) return;            // ?physics=0 — refuse before loading the engine
   const list = physList || activeList();
   if (!list.length) return;
   if (!RAPIER) {

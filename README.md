@@ -553,6 +553,58 @@ pack: per-instance data now travels as five `vec4`s — `(atlas cell, dim, focus
 attributes with `position` and `uv`, one under the ceiling. Bisecting with a URL switch that dropped
 one attribute at a time is what found it; nothing else pointed at the cause.
 
+### Feature flags
+
+Every subsystem can be switched off from the query string, which is what makes the atlas
+testable and what a bug report should narrow with before it is filed:
+
+| Flag | Effect |
+|---|---|
+| `?webgl` | force the WebGL2 backend instead of WebGPU |
+| `?lod=off` | no runtime detail cache — base atlas only |
+| `?dust=0` | no ambient particles |
+| `?bloom=0` | no bloom, and the toggle cannot turn it back on |
+| `?audio=0` | silent, and no audio context is created |
+| `?physics=0` | physics mode refuses to start |
+
+They only ever subtract, so the bare URL is always the full experience.
+
+### Verifying it visually
+
+`tools/verify_web.py` renders a fixed set of scenes headlessly and compares each frame
+against a committed baseline, so a refactor can prove it changed nothing:
+
+```bash
+pip install playwright                       # browser already present; do NOT run `playwright install`
+python3 tools/verify_web.py --update         # capture the baseline BEFORE changing anything
+python3 tools/verify_web.py                  # check against it
+```
+
+What it compares is a **16×16 grid of mean luma**, not raw pixels — a software rasteriser
+and a real GPU disagree in the low bits of every antialiased edge, but they agree on where
+the tiles are. Measured on this workload: repeat runs on one machine differ by **0**, and
+nudging the grid pitch by 1.3% reads **14**. The default tolerance is 3.
+
+A baseline is specific to one backend and one machine, so each keeps its own file —
+`web/docs/baseline.<backend>[.<tag>].json`. Signatures from llvmpipe in a container and
+from a real GPU are not comparable, and sharing one filename means whoever captures last
+breaks everyone else:
+
+```bash
+python3 tools/verify_web.py --update --tag mbp     # your machine, WebGPU
+python3 tools/verify_web.py --tag mbp              # check against it
+```
+
+Re-capture after a browser or driver change — and never widen the tolerance to silence a
+diff you have not explained.
+
+**On the WebGPU path in a container:** three r185's WebGPU backend sends a `swizzle`
+texture-view property that Chromium 1194 rejects outright (`Failed to read the 'swizzle'
+property from 'GPUTextureViewDescriptor'`), so the page never finishes booting there. That
+is a browser-version mismatch, not a bug in this code — current Chrome renders it. The
+verifier falls back to `--backend webgl`, which exercises the same TSL material and the
+same layout maths through the WebGL2 fallback.
+
 ### Verifying it headlessly
 
 Headless Chrome cannot screenshot a WebGPU swapchain — you get a blank frame while the page is
