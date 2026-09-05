@@ -349,16 +349,23 @@ It has to be served over HTTP. Opening `web/index.html` from disk fails twice ov
 | **By length** | a histogram: six labelled towers, from *no prompt text* to *500+ words* |
 | **Physics** | every tile becomes a rigid body and the arrangement collapses into a pile you can shove |
 
+Two toggles sit in the header. **Bloom** is selective post-processing; **sound** is off until you
+ask for it. Both are described below.
+
 Search and the four filters drive the arrangement rather than sitting beside it: matched records
 re-flow to fill whichever shape is selected while everything else recedes to a dim outer shell, so
 the shape on screen is always the shape of the query. Hovering names a record, clicking opens the
 full prompt with a copy button, the source page, the full-resolution original and the same
 `record_id` the exports use — and the URL carries it, so any record is linkable.
 
+![Grid arrangement](web/docs/grid.png)
+
+*Every frame in this section was read back off the GPU on the WebGPU backend, through the bloom
+pipeline — not screenshotted.*
+
 ![Sphere arrangement](web/docs/sphere.png)
 
-*All 2,619 records packed into a shell. Every frame in this section was read back
-off the GPU on the WebGPU backend, not screenshotted.*
+*All 2,619 records packed into a shell.*
 
 ![By length](web/docs/by-length.png)
 
@@ -390,6 +397,27 @@ feature-detected at runtime and the plain build is loaded instead where it is mi
 worker threads that this comparison did not give it, but that needs cross-origin isolation
 (COOP/COEP headers) which a static file server does not send — single-threaded is the honest
 comparison for how this page is actually served.
+
+**Bloom** follows the r185 selective-bloom pattern from
+`examples/webgpu_postprocessing_bloom_emissive.html`: the scene renders with MRT so an `emissive`
+target rides alongside colour, that target is blurred, and the result is added back. The tile
+material writes only its *glow* into that target — the hovered record plus each thumbnail's own
+highlights above a threshold — so bright work blooms while the rest of the wall stays crisp. The
+glow term is multiplied by the filter state, so records your query excluded contribute nothing. The
+emissive target is `UnsignedByteType`, which is all it needs and saves bandwidth on mobile.
+
+**Sound** is synthesised at runtime — there are no audio files in the repository, and nothing is
+built until you press the toggle, because a browser suspends an `AudioContext` created outside a
+user gesture. A pad of detuned triangle voices sits under a lowpass that a slow LFO breathes open,
+and that filter also opens with camera speed, so movement is audible. Hovering a tile plays a note
+from a pentatonic scale chosen by prompt length, so sweeping the wall plays the shape of the data;
+opening a record answers with a fifth; each re-arrangement sweeps a filtered noise burst.
+
+In physics mode the pile is audible. Rapier's contact-force events drive short bandpassed noise
+clicks, pitched and gained by impact strength. The threshold was measured rather than guessed: with
+it set to zero, nine seconds of a collapsing pile produced 681 contact events spanning 0 to 2.4 N,
+so it sits at 0.9 to keep the fifth that read as real knocks. Voices are capped at five per frame —
+2,619 bodies settling would otherwise fan out into noise — and everything runs through a compressor.
 
 **Dependencies are vendored** in `web/vendor/` (three 3.6 MB, Rapier 5.9 MB across both builds) so
 the page works offline from a clone, exactly like the committed thumbnails. Only one Rapier build is

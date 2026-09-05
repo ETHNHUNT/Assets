@@ -40,6 +40,10 @@ h1 span{color:var(--mut);font-weight:400}
   padding:8px 11px;outline:none;backdrop-filter:blur(10px)}
 #q:focus{border-color:var(--acc)}
 #count{color:var(--mut);font-size:11.5px;white-space:nowrap}
+.tgl{background:var(--panel);border:1px solid var(--line);border-radius:20px;padding:4px 11px;
+  font-size:10.5px;color:var(--acc2);cursor:pointer;white-space:nowrap;backdrop-filter:blur(10px)}
+.tgl.off{color:#6a7288}
+.tgl:hover{border-color:var(--acc)}
 .badge{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--acc2);
   border:1px solid #2a4a45;background:rgba(30,60,55,.4);border-radius:20px;padding:3px 9px;white-space:nowrap}
 
@@ -104,7 +108,8 @@ kbd{background:#141822;border:1px solid var(--line);border-radius:4px;padding:0 
 
 @media (max-width:820px){
   #foot{display:none} h1 span{display:none} #count{display:none}
-  #top{padding:10px;gap:8px}
+  #top{padding:10px;gap:6px}
+  .tgl{padding:4px 8px}
   /* the rail becomes a scrolling strip along the bottom rather than vanishing */
   #left{left:0;right:0;top:auto;bottom:0;width:auto;flex-direction:row;gap:8px;
     padding:8px;overflow-x:auto;-webkit-overflow-scrolling:touch}
@@ -130,6 +135,8 @@ kbd{background:#141822;border:1px solid var(--line);border-radius:4px;padding:0 
   <h1>Prompt Atlas <span id="sub">· 2,619 generations</span></h1>
   <input id="q" type="search" aria-label="Search prompts" placeholder="Search 2.29M characters of prompt text…" autocomplete="off">
   <span id="count"></span>
+  <button class="tgl off" id="sound" title="Sound off" aria-pressed="false">◍ sound</button>
+  <button class="tgl" id="bloom" title="Bloom on" aria-pressed="true">✦ bloom</button>
   <span class="badge" id="backend">detecting</span>
 </div>
 
@@ -184,7 +191,8 @@ kbd{background:#141822;border:1px solid var(--line);border-radius:4px;padding:0 
     "three": "./vendor/three.webgpu.js",
     "three/webgpu": "./vendor/three.webgpu.js",
     "three/tsl": "./vendor/three.tsl.js",
-    "three/addons/controls/OrbitControls.js": "./vendor/OrbitControls.js"
+    "three/addons/controls/OrbitControls.js": "./vendor/OrbitControls.js",
+    "three/addons/tsl/display/BloomNode.js": "./vendor/tsl/BloomNode.js"
   }
 }
 </script>

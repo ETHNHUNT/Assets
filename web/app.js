@@ -13,8 +13,11 @@
 import * as THREE from 'three/webgpu';
 import {
   attribute, uv, vec2, vec3, vec4, float, texture, mix, smoothstep, positionLocal,
+  pass, mrt, output,
 } from 'three/tsl';
+import { bloom } from 'three/addons/tsl/display/BloomNode.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { AtlasAudio } from './audio.js';
 
 // ---------------------------------------------------------------- boot ------
 const $ = (s) => document.querySelector(s);
@@ -23,6 +26,8 @@ const step = (pct, msg) => { lbar.style.width = pct + '%'; if (msg) lmsg.textCon
 
 let DATA, ATLAS, PER_ROW, N;
 let renderer, scene, camera, controls, mesh, dust;
+let pipeline = null, bloomPass = null, bloomOn = true;
+const audio = new AtlasAudio();
 let aCell, aDim, aFocus;                 // instanced attributes
 let posCur, posTo, quatCur, quatTo;      // morph buffers
 let morph = 1;                           // 1 = settled
@@ -79,18 +84,22 @@ async function boot() {
     await initRenderer();
     step(74, 'building scene');
     buildScene();
+    buildPipeline();
     buildUI();
     step(88, 'first frame');
-    renderer.render(scene, camera);
+    pipeline.render();
 
-    window.__atlas = { THREE, renderer, scene, camera, mesh, controls,
+    window.__atlas = { THREE, renderer, scene, camera, mesh, controls, audio,
+      get pipeline() { return pipeline; }, setBloom,
       get info() { return renderer.info; },
       // headless screenshots cannot capture a WebGPU swapchain, so verification
       // reads the pixels back off the GPU instead
-      async readback(n = 256) {
+      // `post` routes through the bloom pipeline; without it you read the raw
+      // scene pass and would conclude bloom is missing.
+      async readback(n = 256, post = true) {
         const rt = new THREE.RenderTarget(n, n);
         renderer.setRenderTarget(rt);
-        renderer.render(scene, camera);
+        if (post && pipeline) pipeline.render(); else renderer.render(scene, camera);
         renderer.setRenderTarget(null);
         const buf = await renderer.readRenderTargetPixelsAsync(rt, 0, 0, n, n);
         let lit = 0, sum = 0;
@@ -199,6 +208,13 @@ function tileMaterial() {
   const lit = mix(ghost, base, dim).add(vec3(0.15, 0.17, 0.28).mul(foc));
   mat.colorNode = vec4(lit, 1.0);
 
+  // What this tile contributes to the bloom target: the focused record glows,
+  // and each thumbnail's own highlights lift a little so the wall reads as lit
+  // rather than as a texture sheet. Filtered-out tiles contribute nothing.
+  const highlight = smoothstep(float(0.62), float(1.0), lum).mul(0.42);
+  const glow = foc.mul(0.85).add(highlight).mul(dim);
+  mat.mrtNode = mrt({ emissive: vec4(lit.mul(glow), 1.0) });
+
   // rounded corners, so the wall reads as tiles rather than a texture sheet
   const R = float(0.07);
   const d = uv().sub(0.5).abs().sub(vec2(float(0.5).sub(R), float(0.5).sub(R)))
@@ -227,6 +243,37 @@ function addDust() {
   });
   dust = new THREE.Points(g, m);
   scene.add(dust);
+}
+
+/**
+ * Selective bloom, following the three.js r185 pattern from
+ * examples/webgpu_postprocessing_bloom_emissive.html: render the scene with MRT
+ * so an "emissive" target rides alongside colour, blur that target, add it back.
+ * The tile material writes only its glow into that target (see tileMaterial), so
+ * the hovered record and the brightest parts of each thumbnail bloom while the
+ * rest of the wall stays crisp.
+ */
+function buildPipeline() {
+  const scenePass = pass(scene, camera);
+  const mrtNode = mrt({ output: output, emissive: vec4(0, 0, 0, 1) });
+  scenePass.setMRT(mrtNode);
+
+  // the glow target never needs more than 8 bits — saves bandwidth on mobile
+  const emissiveTexture = scenePass.getTexture('emissive');
+  emissiveTexture.type = THREE.UnsignedByteType;
+
+  const colourNode = scenePass.getTextureNode();
+  bloomPass = bloom(scenePass.getTextureNode('emissive'), 1.15, 0.55, 0.0);
+
+  pipeline = new THREE.RenderPipeline(renderer);
+  pipeline.outputNode = colourNode.add(bloomPass);
+}
+
+function setBloom(on) {
+  bloomOn = on;
+  if (bloomPass) bloomPass.strength.value = on ? 1.15 : 0.0;
+  const b = $('#bloom');
+  if (b) { b.classList.toggle('off', !on); b.title = on ? 'Bloom on' : 'Bloom off'; }
 }
 
 // ------------------------------------------------------------- layouts ------
@@ -476,6 +523,7 @@ function layout(next, instant) {
   }
 
   buildLabels();
+  if (!instant) audio.morph();
   morph = instant ? 1 : 0;
   if (instant) { posCur.set(posTo); quatCur.set(quatTo); writeMatrices(); }
 }
@@ -530,6 +578,14 @@ function bakeCurrent() {
 // ------------------------------------------------------------- physics ------
 // Rapier is a ~3 MB wasm bundle, so it is only fetched when physics is entered.
 let RAPIER = null, world = null, bodies = null, ground = null, physReady = false;
+let events = null;
+
+// Measured, not guessed: with the threshold at zero, 9 s of a collapsing pile
+// produced 681 contact events spanning 0 to 2.4 N — these tiles are thin and
+// light. 0.9 keeps the ~20% that read as real knocks; 2.5 maps the hardest of
+// them to full loudness.
+const CONTACT_THRESHOLD = 0.9;
+const IMPACT_SCALE = 2.5;
 
 function simdSupported() {
   try {
@@ -554,6 +610,10 @@ async function startPhysics() {
   stopPhysics();
 
   world = new RAPIER.World({ x: 0, y: -24, z: 0 });
+  // Contact-force events with a threshold, not raw collision events: a 2,619
+  // body pile generates thousands of touches a frame, and only the hard ones
+  // are worth hearing.
+  events = new RAPIER.EventQueue(true);
   const FLOOR = -26, W = 78;
   ground = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(0, FLOOR - 1, 0));
   world.createCollider(RAPIER.ColliderDesc.cuboid(W, 1, W), ground);
@@ -569,7 +629,9 @@ async function startPhysics() {
       RAPIER.RigidBodyDesc.dynamic()
         .setTranslation(posCur[a], Math.max(posCur[a + 1], FLOOR + 3), posCur[a + 2])
         .setLinearDamping(0.16).setAngularDamping(0.28));
-    const col = RAPIER.ColliderDesc.cuboid(0.5, 0.5, 0.05).setRestitution(0.22).setFriction(0.85);
+    const col = RAPIER.ColliderDesc.cuboid(0.5, 0.5, 0.05).setRestitution(0.22).setFriction(0.85)
+      .setActiveEvents(RAPIER.ActiveEvents.CONTACT_FORCE_EVENTS)
+      .setContactForceEventThreshold(CONTACT_THRESHOLD);
     world.createCollider(col, rb);
     rb.setAngvel({ x: (Math.random() - .5) * 2, y: (Math.random() - .5) * 2, z: (Math.random() - .5) * 2 }, true);
     bodies.set(i, rb);
@@ -580,12 +642,23 @@ async function startPhysics() {
 
 function stopPhysics() {
   if (world) { world.free(); world = null; }
+  if (events) { events.free(); events = null; }
   bodies = null; ground = null; physReady = false;
 }
 
 function stepPhysics() {
   if (!physReady) return;
-  world.step();
+  world.step(events);
+  if (audio.on) {
+    let heard = 0;
+    events.drainContactForceEvents((e) => {
+      const f = e.totalForceMagnitude();
+      if (heard++ > 4) return;                       // the voice cap does the rest
+      audio.impact(Math.min(1, f / IMPACT_SCALE));
+    });
+  } else {
+    events.drainContactForceEvents(() => {});        // must drain or it grows
+  }
   for (const [i, rb] of bodies) {
     const t = rb.translation(), r = rb.rotation();
     _p.set(t.x, t.y, t.z); _q.set(r.x, r.y, r.z, r.w);
@@ -650,6 +723,7 @@ function pick() {
   const tip = $('#tip');
   if (id < 0) { tip.classList.remove('on'); document.body.style.cursor = ''; return; }
   const r = DATA.records[id];
+  audio.hover(r);
   tip.innerHTML = `<b>${esc(r.n || r.t || 'Prompt')}</b>
     <i>${esc(r.m || 'no model')} · ${r.w} words · ${esc(r.k || '')}</i>`;
   tip.classList.add('on');
@@ -662,6 +736,7 @@ const esc = (t) => String(t == null ? '' : t).replace(/[&<>"]/g,
 // -------------------------------------------------------------- detail ------
 function selectIndex(i) {
   selected = i;
+  audio.select();
   const r = DATA.records[i];
   $('#dname').textContent = r.n || r.t || 'Prompt';
   $('#dimg').src = `../assets/${r.th}`;
@@ -793,6 +868,18 @@ function buildUI() {
   $('#f-kind').onchange = applyFilters;
   $('#reset').onclick = resetFilters;
   $('#q').oninput = debounce(applyFilters, 180);
+  const sndBtn = $('#sound');
+  sndBtn.onclick = async () => {
+    const on = await audio.toggle();
+    sndBtn.classList.toggle('off', !on);
+    sndBtn.title = on ? 'Sound on' : 'Sound off';
+    sndBtn.setAttribute('aria-pressed', String(on));
+    if (on) audio.select();                 // confirm audibly that it worked
+  };
+  $('#bloom').onclick = () => {
+    setBloom(!bloomOn);
+    $('#bloom').setAttribute('aria-pressed', String(bloomOn));
+  };
   $('#dclose').onclick = closeDetail;
   $('#dcopy').onclick = copyPrompt;
   $('#dsimilar').onclick = showSimilar;
@@ -872,6 +959,7 @@ function copyPrompt() {
 
 // ---------------------------------------------------------------- loop ------
 let last = performance.now(), fpsAcc = 0, fpsN = 0;
+const _camPrev = new THREE.Vector3();
 
 function tick() {
   const now = performance.now();
@@ -910,9 +998,14 @@ function tick() {
       m.quaternion.copy(camera.quaternion);
     });
   }
+  if (audio.on) {
+    const d = camera.position.distanceTo(_camPrev);
+    _camPrev.copy(camera.position);
+    audio.motion(d / Math.max(dt, 1e-3) / 40);
+  }
   if (dust) dust.rotation.y += dt * 0.006;
   controls.update();
-  renderer.render(scene, camera);
+  if (pipeline) pipeline.render(); else renderer.render(scene, camera);
 
   fpsAcc += dt; fpsN++;
   if (fpsAcc >= 0.5) {
