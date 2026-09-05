@@ -80,7 +80,7 @@ async function boot() {
     DATA = await fetchJSON('./data/records.json', 'records');
     N = DATA.records.length;
 
-    const tier = matchMedia('(max-width:820px)').matches ? 'low' : 'high';
+    const tier = (COARSE || SMALL) ? 'low' : 'high';   // device class, not orientation
     const at = DATA.atlas[tier] || DATA.atlas.high;
     PER_ROW = at.perRow;
 
@@ -188,11 +188,23 @@ async function initRenderer() {
  * cells, and a per-instance attribute says which source to sample: -1 means the
  * base atlas, anything else is a slot in the cache. As the camera moves, the
  * nearest tiles claim slots and departed ones give them back, so detail follows
- * the viewer for a fixed 16 MB rather than scaling with the collection.
+ * the viewer for a fixed budget rather than scaling with the collection.
  */
-const DETAIL_SIDE = 2048, DETAIL_CELL = 256;
-const DETAIL_PER_ROW = DETAIL_SIDE / DETAIL_CELL;          // 8
-const DETAIL_SLOTS = DETAIL_PER_ROW * DETAIL_PER_ROW;      // 64 crisp tiles
+// A finger has no hover state and fires no pointermove on a clean tap, so the
+// whole hover path is not merely useless on touch, it is actively wrong.
+const COARSE = matchMedia('(hover: none), (pointer: coarse)').matches;
+// Must match the CSS breakpoint below: a phone held sideways is 844px wide and
+// would otherwise get the desktop rail, which runs off the bottom of a 390px
+// viewport and takes the filters with it.
+const SMALL = matchMedia('(max-width:820px), (max-height:520px)').matches;
+
+// A phone gets the 32px atlas tier, so a tile it pinches into is mush without
+// this — the cache matters more on mobile than on desktop, not less. It is the
+// budget that shrinks: 1024² is 4 MB against the desktop's 16 MB, holding 16
+// cells at the same 256px crispness.
+const DETAIL_SIDE = (COARSE || SMALL) ? 1024 : 2048, DETAIL_CELL = 256;
+const DETAIL_PER_ROW = DETAIL_SIDE / DETAIL_CELL;          // 4 on a phone, 8 otherwise
+const DETAIL_SLOTS = DETAIL_PER_ROW * DETAIL_PER_ROW;      // 16 or 64 crisp tiles
 const DETAIL_MIN_PX = 74;        // only worth loading once a tile is this big on screen
 let DETAIL = null, detailCtx = null;
 let slotOwner = null;            // slot -> record index, or -1
@@ -356,7 +368,7 @@ function buildScene() {
 
   // must precede tileMaterial(): the material samples DETAIL if it exists
   const lodOff = new URLSearchParams(location.search).get('lod') === 'off';
-  if (!lodOff && !matchMedia('(max-width:820px)').matches) buildDetailCache();
+  if (!lodOff) buildDetailCache();
 
   mesh = new THREE.InstancedMesh(geo, tileMaterial(), N);
   mesh.frustumCulled = false;
@@ -581,12 +593,47 @@ function activeList() {
   return a;
 }
 
+/**
+ * Rapier's cost in a dense pile climbs faster than the body count, because
+ * contact pairs do: measured on this exact workload, 1,200 bodies cost 0.31x
+ * of 2,619 rather than the 0.46x a linear model predicts. A phone therefore
+ * simulates the nearest 1,200 and lets the rest recede to the same far shell a
+ * filtered-out record goes to, so the view stays coherent instead of leaving a
+ * frozen grid hanging over the pile.
+ */
+const PHYS_MAX = COARSE ? 1200 : Infinity;
+let physList = null;
+
+function choosePhysList() {
+  const list = activeList();
+  if (list.length <= PHYS_MAX) { physList = list; return list; }
+  const cam = camera.position;
+  const scored = list.map((i) => {
+    const a = i * 3;
+    const dx = posCur[a] - cam.x, dy = posCur[a + 1] - cam.y, dz = posCur[a + 2] - cam.z;
+    return [dx * dx + dy * dy + dz * dz, i];
+  });
+  scored.sort((p, q) => p[0] - q[0]);
+  physList = scored.slice(0, PHYS_MAX).map((p) => p[1]);
+  return physList;
+}
+
 function setTarget(i, x, y, z, q) {
   posTo[i * 3] = x; posTo[i * 3 + 1] = y; posTo[i * 3 + 2] = z;
   quatTo[i * 4] = q.x; quatTo[i * 4 + 1] = q.y; quatTo[i * 4 + 2] = q.z; quatTo[i * 4 + 3] = q.w;
 }
 
 const FLAT = new THREE.Quaternion();
+
+/**
+ * Arrangements were packed to a fixed landscape ratio, which on a phone held
+ * upright leaves most of the screen empty and the tiles too small to read.
+ * Landscape keeps each arrangement's tuned ratio exactly as before; portrait
+ * gets the shape the screen actually has.
+ */
+function viewAspect(landscape) {
+  return innerWidth >= innerHeight ? landscape : Math.max(0.55, innerWidth / innerHeight);
+}
 
 /**
  * Matched records fill the arrangement; unmatched ones are pushed out to a
@@ -603,7 +650,7 @@ function layout(next, instant) {
   groupLabels.length = 0;
 
   if (mode === 'grid') {
-    const cols = Math.max(1, Math.round(Math.sqrt(n * 1.9)));
+    const cols = Math.max(1, Math.round(Math.sqrt(n * viewAspect(1.9))));
     const gx = 1.5, gy = 1.5;
     list.forEach((idx, k) => {
       const c = k % cols, r = Math.floor(k / cols);
@@ -632,7 +679,7 @@ function layout(next, instant) {
       out[idx] = [v.x, v.y, v.z, q];
     });
   } else if (mode === 'physics') {
-    for (const idx of list) {
+    for (const idx of choosePhysList()) {
       const a = idx * 3;
       out[idx] = [posCur[a], posCur[a + 1], posCur[a + 2], FLAT];
     }
@@ -698,9 +745,9 @@ function layout(next, instant) {
       return { cols, rows, w: cols * PITCH, h: rows * PITCH };
     });
 
-    // pack into rows aiming at a roughly 16:9 overall footprint
+    // pack into rows aiming at the footprint the screen can actually show
     const area = dims.reduce((a, d) => a + (d.w + GAP_X) * (d.h + GAP_Y), 0);
-    const target = Math.sqrt(area * (16 / 9));
+    const target = Math.sqrt(area * viewAspect(16 / 9));
     const lines = [];
     let cur = [], curW = 0;
     dims.forEach((d, gi) => {
@@ -886,7 +933,7 @@ function simdSupported() {
 }
 
 async function startPhysics() {
-  const list = activeList();
+  const list = physList || activeList();
   if (!list.length) return;
   if (!RAPIER) {
     lmsg.textContent = 'loading physics';
@@ -979,6 +1026,14 @@ const ptr = new THREE.Vector2(-9, -9);
 let pointerMoved = false, downAt = null;
 
 addEventListener('pointermove', (e) => {
+  // Skip the hover path for touch entirely: a drag would otherwise run the
+  // 2,619-tile broad phase on every frame of an orbit for a highlight the
+  // user cannot see.
+  if (e.pointerType === 'touch') return;
+  if (!onScene(e)) {                          // over the chrome: drop any hover
+    if (hovered >= 0) { hovered = -1; easeSettled = false; $('#tip').classList.remove('on'); }
+    return;
+  }
   ptr.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
   pointerMoved = true;
   const tip = $('#tip');
@@ -987,14 +1042,31 @@ addEventListener('pointermove', (e) => {
     tip.style.top = Math.min(e.clientY + 16, innerHeight - 90) + 'px';
   }
 });
-addEventListener('pointerdown', (e) => { downAt = { x: e.clientX, y: e.clientY }; });
+/** The scene listens on window, so without this a press on the HUD or inside
+ *  the detail panel raycasts straight through it and picks the tile behind. */
+const onScene = (e) => e.target && e.target.tagName === 'CANVAS';
+
+addEventListener('pointerdown', (e) => {
+  if (!onScene(e)) { downAt = null; return; }
+  downAt = { x: e.clientX, y: e.clientY, touch: e.pointerType === 'touch' };
+});
 addEventListener('pointerup', (e) => {
   if (!downAt) return;
   const moved = Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y);
+  const slop = downAt.touch ? 12 : 6;          // a finger rolls; a mouse does not
   downAt = null;
-  if (moved > 6) return;                       // that was an orbit drag
-  if (hovered >= 0) selectIndex(hovered);
-  else if (physReady) {                        // empty space in physics mode: shove
+  if (moved > slop) return;                    // that was an orbit drag
+
+  // Resolve what is under the point that was *released*, rather than trusting
+  // `hovered`. A touch tap fires no pointermove, so `hovered` still holds
+  // wherever the pointer was last seen — on a phone that is a different record
+  // entirely, and it opens silently with no sign anything went wrong.
+  ptr.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  const id = morph < 1 ? -1 : pickInstance();
+  if (id >= 0) {
+    hovered = id; easeSettled = false;
+    selectIndex(id);
+  } else if (physReady) {                      // empty space in physics mode: shove
     ray.setFromCamera(ptr, camera);
     const at = new THREE.Vector3();
     if (ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 20), at)) shove(at);
@@ -1056,6 +1128,7 @@ function pickInstance() {
 }
 
 function pick() {
+  if (COARSE) return;                          // no hover to compute
   if (!pointerMoved) return;
   pointerMoved = false;
   // mid-morph the CPU copy of the positions is the start of the flight, not
@@ -1100,7 +1173,11 @@ function selectIndex(i) {
   $('#dfull').textContent = r.f ? 'Full-resolution original ↗' : '';
   $('#dfull').href = r.f || '#';
   $('#detail').classList.add('open');
-  history.replaceState(null, '', '#' + r.id);
+  // One history entry for the panel, not one per record: on a phone the panel
+  // is a full-screen takeover and Back is how you expect to leave it, but
+  // stepping back through forty records to exit is not what anyone means.
+  if (pushedDetail) history.replaceState(null, '', '#' + r.id);
+  else { history.pushState({ atlas: 1 }, '', '#' + r.id); pushedDetail = true; }
   flyTo(i);
 }
 
@@ -1182,10 +1259,50 @@ function flyTo(i) {
          camera.position.clone(), target.clone().add(dir.multiplyScalar(9)));
 }
 
-function closeDetail() {
+let pushedDetail = false;
+
+function closeDetail(fromPop) {
   selected = -1;
+  easeSettled = false;
   $('#detail').classList.remove('open');
+  if (!fromPop && pushedDetail) { pushedDetail = false; history.back(); return; }
+  pushedDetail = false;
   history.replaceState(null, '', location.pathname + location.search);
+}
+addEventListener('popstate', () => {
+  if (pushedDetail || $('#detail').classList.contains('open')) closeDetail(true);
+});
+
+/**
+ * Swipe the panel away. On a phone it covers the whole screen, so a single
+ * 44px X in the corner was the only way out of it.
+ */
+function wireDetailSwipe() {
+  const el = $('#detail');
+  let sx = 0, sy = 0, live = false, axis = 0;      // axis: 0 undecided, 1 swipe, -1 scroll
+  el.addEventListener('pointerdown', (e) => {
+    if (e.pointerType !== 'touch') return;
+    sx = e.clientX; sy = e.clientY; live = true; axis = 0;
+  });
+  el.addEventListener('pointermove', (e) => {
+    if (!live) return;
+    const dx = e.clientX - sx, dy = e.clientY - sy;
+    if (!axis) {
+      if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+      // a mostly-vertical drag is the prompt text being scrolled, not a dismiss
+      axis = Math.abs(dx) > Math.abs(dy) ? 1 : -1;
+      if (axis === 1) el.style.transition = 'none';
+    }
+    if (axis === 1) el.style.transform = `translateX(${Math.max(0, dx)}px)`;
+  });
+  const release = (e) => {
+    if (!live) return;
+    live = false;
+    el.style.transition = ''; el.style.transform = '';
+    if (axis === 1 && e.clientX - sx > 60) closeDetail();
+  };
+  el.addEventListener('pointerup', release);
+  el.addEventListener('pointercancel', release);
 }
 
 // ----------------------------------------------------------------- UI -------
@@ -1231,6 +1348,8 @@ function buildUI() {
   $('#f-kind').onchange = applyFilters;
   $('#reset').onclick = resetFilters;
   $('#q').oninput = debounce(applyFilters, 180);
+  if (SMALL) $('#q').placeholder = 'Search prompts\u2026';   // the long one truncates
+
   const sndBtn = $('#sound');
   sndBtn.onclick = async () => {
     const on = await audio.toggle();
@@ -1243,7 +1362,8 @@ function buildUI() {
     setBloom(!bloomOn);
     $('#bloom').setAttribute('aria-pressed', String(bloomOn));
   };
-  $('#dclose').onclick = closeDetail;
+  $('#dclose').onclick = () => closeDetail();
+  wireDetailSwipe();
   $('#dcopy').onclick = copyPrompt;
   $('#dsimilar').onclick = showSimilar;
 
@@ -1251,10 +1371,14 @@ function buildUI() {
     if (e.key === 'Escape') { closeDetail(); $('#q').blur(); }
     if (e.key === '/' && document.activeElement !== $('#q')) { e.preventDefault(); $('#q').focus(); }
   });
-  addEventListener('resize', () => {
+  // Mobile browsers fire resize every time the URL bar slides in or out, so
+  // debounce it: reallocating the swapchain mid-scroll is the one thing here
+  // that reliably stutters.
+  addEventListener('resize', debounce(() => {
     camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     renderer.setSize(innerWidth, innerHeight);
-  });
+  }, 140));
   applyFilters();
 }
 

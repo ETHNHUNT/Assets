@@ -402,7 +402,9 @@ comparison for how this page is actually served.
 close. So a second 2048² texture acts as a *cache* of 64 full-resolution cells, and a per-instance
 attribute chooses the source: the nearest tiles claim slots as you approach and hand them back as
 you leave, so sharpness follows the viewer for a fixed ~16 MB rather than scaling with the
-collection. The HUD reports how many slots are held. It is desktop-only, and `?lod=off` disables it.
+collection. The HUD reports how many slots are held. A touch device gets the same mechanism at a
+1024² / 16-cell budget — 4 MB, and it matters more there, since a phone is on the 32px atlas tier to
+begin with. `?lod=off` disables it.
 
 The mechanism is adapted from [YaleDHLab/pix-plot](https://github.com/YaleDHLab/pix-plot) (MIT),
 which does this for 100,000+ images — the technique, not the code: theirs is WebGL/regl and predates
@@ -528,11 +530,75 @@ the renderer, scene and camera for exactly this. Two things to watch: `navigator
 a secure context, so serve over `localhost`; and WebGPU requires `bytesPerRow % 256 == 0`, so read
 back at a width that is a multiple of 64 (1024 works, 900 gives you diagonal streaks).
 
+### On a phone
+
+The touch pass found that the central interaction was not merely awkward, it was
+**wrong**. Selection ran off `hovered`, a value the render loop computes from the last
+`pointermove` — and a clean tap fires **no `pointermove` at all**, only `pointerdown` and
+`pointerup`. So a tap opened whatever the pointer had last been near. Measured: with the hover
+parked on tile 1238 and a real touch landing on tile 1453, **292 px away**, the panel opened
+record 1238. Silently, with nothing to suggest the wrong thing had happened.
+
+The fix is to stop consulting the hover. A tap now resolves what is under the point that was
+*released* and selects that, so the hover path exists only for a mouse. It is also skipped
+entirely on a coarse pointer, which means a one-finger orbit no longer runs the 2,619-tile broad
+phase every frame for a highlight nobody can see.
+
+The rest of what the pass turned up, all of it measured rather than eyeballed:
+
+| found | fix |
+|---|---|
+| the bloom toggle and the backend badge sat **entirely off the right edge** at 390px — a flex item will not shrink below its content without `min-width:0` | the search field shrinks instead, and the title gives up its space |
+| every control was under the 44px a thumb needs: the close X was **26×26**, the mode buttons 43×35, the dropdowns 173×30 | all 44px, with `touch-action:manipulation` to drop the 300ms tap delay |
+| the four filters were **off-screen to the right** of a single 1,177px-wide scrolling row, with nothing to say they existed | two rows — arrangements, then filters — each scrolling, both in view |
+| **landscape was broken outright**: a phone held sideways is 844px wide, missed the 820px breakpoint, and got the desktop rail, which ran 68px past the bottom of a 390px viewport and took the filters with it | the breakpoint is `max-width:820px, max-height:520px`, and the atlas tier keys off the pointer rather than the orientation |
+| the detail cache was **disabled below 820px** — so a phone, on the 32px atlas tier, had nothing sharper to show when you pinched in | enabled with a smaller budget: 1024², 16 cells, 4 MB against the desktop's 16 |
+| the panel was a full-screen takeover with one 26px exit | swipe it away, or press Back — one history entry per panel, not one per record |
+| a tap *inside* the panel raycast straight through it and could select the tile behind | the window handlers act only on the canvas |
+| physics built all **2,619 rigid bodies** on a phone, exactly as on desktop | the nearest 1,200; the rest recede to the same shell a filtered-out record goes to |
+
+One more thing the pass turned up, which is not a bug so much as an assumption: the arrangements
+packed to a fixed landscape ratio — the grid to 1.9:1, the model blocks to 16:9 — so a phone held
+upright showed a thin band of tiles across the middle of an otherwise empty screen. Portrait now
+packs to the shape the screen actually has. Landscape keeps each arrangement's tuned ratio exactly
+as it was, so nothing on a desktop moves.
+
+![The atlas on a phone](web/docs/mobile-grid.png)
+![A record open on a phone](web/docs/mobile-detail.png)
+
+*390×844, portrait. Left: the grid packed to the viewport rather than to 1.9:1, with the two control
+rows below and the whole top bar — search, sound, bloom, backend — fitting for the first time.
+Right: a record open, every control at 44px. Captured on the WebGL 2 path, which is the only way to
+get the frame and the DOM chrome into one image; a WebGPU swapchain does not appear in a screenshot.*
+
+The physics cap is measured, not picked. Rapier's cost in a dense pile climbs faster than the body
+count, because contact pairs do — on this workload, stepping the same scene:
+
+| bodies | mean ms/step | vs 2,619 |
+|---|---|---|
+| 2,619 | 25.18 | 1.00× |
+| 1,600 | 11.51 | 0.46× |
+| 1,200 | 7.89 | **0.31×** |
+| 900 | 4.88 | 0.19× |
+| 600 | 3.02 | 0.12× |
+
+1,200 costs 0.31× of the full set where a linear model predicts 0.46×, and still reads as a big
+pile. These are container numbers on a software rasteriser, so treat the **ratio** as the finding
+and not the milliseconds.
+
+Verified under Chrome device emulation with real touch, at 375×667, 390×844, 412×915, 744×1133 and
+844×390 landscape: the top bar fits on all five, every rail control is reachable, one-finger orbit
+and pinch-to-zoom both work, a tap opens the record it landed on, the detail cache fills all 16
+slots, and the frame reads back 87.4% lit. Zero page errors. What emulation *cannot* check is the
+`env(safe-area-inset-*)` padding — it resolves to 0 with no notch to report — so that one is
+written to spec rather than confirmed on glass.
+
 ### Browser support
 
 WebGPU where available, automatic WebGL 2 fallback everywhere else — the same scene, the same
-shaders, no separate code path. Append `?webgl=1` to force the fallback and compare. The atlas drops
-to the 32px tier and the controls become a bottom strip below 820px wide.
+shaders, no separate code path. Append `?webgl=1` to force the fallback and compare. A touch device
+gets the 32px atlas tier and the smaller detail cache, and the controls become two scrolling rows
+along the bottom below 820px wide or 520px tall — see *On a phone* above.
 
 ---
 
