@@ -585,8 +585,18 @@ and a real GPU disagree in the low bits of every antialiased edge, but they agre
 the tiles are. Measured on this workload: repeat runs on one machine differ by **0**, and
 nudging the grid pitch by 1.3% reads **14**. The default tolerance is 3.
 
-A baseline is specific to one backend and one machine. Re-capture it after a browser or
-driver change — never widen the tolerance to silence a diff you have not explained.
+A baseline is specific to one backend and one machine, so each keeps its own file —
+`web/docs/baseline.<backend>[.<tag>].json`. Signatures from llvmpipe in a container and
+from a real GPU are not comparable, and sharing one filename means whoever captures last
+breaks everyone else:
+
+```bash
+python3 tools/verify_web.py --update --tag mbp     # your machine, WebGPU
+python3 tools/verify_web.py --tag mbp              # check against it
+```
+
+Re-capture after a browser or driver change — and never widen the tolerance to silence a
+diff you have not explained.
 
 **On the WebGPU path in a container:** three r185's WebGPU backend sends a `swizzle`
 texture-view property that Chromium 1194 rejects outright (`Failed to read the 'swizzle'

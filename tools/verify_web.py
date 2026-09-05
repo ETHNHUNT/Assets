@@ -25,7 +25,19 @@ mesa-vulkan-drivers installed it falls back to the WebGL2 backend and says so.
 import argparse, http.server, json, os, socket, socketserver, subprocess, sys, threading, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-BASELINE = os.path.join(ROOT, "web", "docs", "baseline.json")
+BASELINE_DIR = os.path.join(ROOT, "web", "docs")
+
+
+def baseline_path(backend, tag=None):
+    """Baselines are per-backend and per-machine, so they get separate files.
+
+    A signature captured on llvmpipe/WebGL2 in a container and one captured on a real
+    GPU are not comparable, and keeping both under one filename means whoever captures
+    last breaks everyone else. `--tag` names the machine; the default keeps the
+    container's file where it already is.
+    """
+    name = f"baseline.{backend}" + (f".{tag}" if tag else "") + ".json"
+    return os.path.join(BASELINE_DIR, name)
 VULKAN_ICD = "/usr/share/vulkan/icd.d/lvp_icd.json"
 
 
@@ -159,6 +171,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--update", action="store_true", help="write the baseline instead of checking")
     ap.add_argument("--backend", choices=["webgpu", "webgl"], default="webgpu")
+    ap.add_argument("--tag", default=None,
+                    help="name this machine, e.g. --tag mbp. Signatures from different "
+                         "GPUs are not comparable, so each machine keeps its own baseline.")
+    ap.add_argument("--baseline", default=None, help="explicit baseline path, overriding --tag")
     ap.add_argument("--tolerance", type=int, default=3,
                     help="max per-cell luma difference (0-255) still considered unchanged. "
                          "Run-to-run noise on one machine is 0, so this is deliberately tight; "
@@ -173,18 +189,23 @@ def main():
     if len(cur) != len(SCENES):
         sys.exit(f"captured {len(cur)} of {len(SCENES)} scenes")
 
+    path = a.baseline or baseline_path(backend, a.tag)
     if a.update:
-        os.makedirs(os.path.dirname(BASELINE), exist_ok=True)
-        json.dump({"backend": backend, "cells": 16, "size": 512, "scenes": cur},
-                  open(BASELINE, "w"), indent=1)
-        print(f"\nbaseline written -> {os.path.relpath(BASELINE, ROOT)} ({len(cur)} scenes)")
+        os.makedirs(BASELINE_DIR, exist_ok=True)
+        json.dump({"backend": backend, "tag": a.tag, "cells": 16, "size": 512,
+                   "instances": None, "scenes": cur}, open(path, "w"), indent=1)
+        print(f"\nbaseline written -> {os.path.relpath(path, ROOT)} ({len(cur)} scenes)")
         return
 
-    if not os.path.exists(BASELINE):
-        sys.exit(f"no baseline at {BASELINE} — run with --update first")
-    base = json.load(open(BASELINE))
+    if not os.path.exists(path):
+        have = sorted(f for f in os.listdir(BASELINE_DIR) if f.startswith("baseline."))
+        sys.exit(f"no baseline at {os.path.relpath(path, ROOT)} — run with --update first"
+                 + (f"\navailable: {', '.join(have)}" if have else ""))
+    base = json.load(open(path))
+    print(f"  baseline: {os.path.relpath(path, ROOT)}")
     if base.get("backend") != backend:
-        print(f"  note: baseline captured on {base.get('backend')}, checking on {backend}")
+        print(f"  note: baseline captured on {base.get('backend')}, checking on {backend} — "
+              f"these are not comparable; capture one for this backend instead")
     rows, worst = compare(base["scenes"], cur, a.tolerance)
 
     print(f"\n  {'scene':14s} {'maxΔ':>6s} {'meanΔ':>7s}")
