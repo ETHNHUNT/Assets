@@ -1,0 +1,7 @@
+# The crawl and extraction stages (crawl.py, discover.py, master.py, clean.py and
+# the seven extractors) use only the Python standard library. These are needed
+# for the build stages only.
+
+Pillow>=10.0        # assets.py — thumbnail generation; verify.py — image checks
+openpyxl>=3.1       # build_xlsx.py — the Excel workbook
+reportlab>=4.0      # build_pdf.py — the print catalogue
