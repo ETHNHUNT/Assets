@@ -152,6 +152,10 @@ def run(rows, outdir, width, threads=10, limit=None):
     # pairing fix repoints a record at a different asset the cached file would silently
     # persist and show the wrong picture. This index records which URL each thumbnail
     # was built from and forces a refetch when that changes.
+    # The index is not committed (see .gitignore), so on a fresh clone it is absent.
+    # An absent entry means "unknown", never "changed": treating it as changed deleted
+    # every committed thumbnail on the first rebuild, and the ones whose asset the CDN
+    # has since withdrawn could not be fetched back.
     ipath = os.path.join(outdir, "thumbs.index.json")
     try:
         built = json.load(open(ipath))
@@ -163,7 +167,7 @@ def run(rows, outdir, width, threads=10, limit=None):
         if not tp:
             continue
         fp = os.path.join(outdir, tp)
-        if os.path.exists(fp) and built.get(tp) != r["full_res_url"]:
+        if os.path.exists(fp) and tp in built and built[tp] != r["full_res_url"]:
             try:
                 os.unlink(fp); stale += 1
             except OSError:

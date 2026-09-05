@@ -100,7 +100,8 @@ Nothing behind authentication was touched.
 
 Higgsfield is a **TanStack Start** app. Each page inlines a server-rendered router payload — a
 `$R[n]=…` object graph — that holds the real generation records behind every gallery tile. That
-payload, not the rendered DOM, is the high-fidelity source. Seven extractors run over every page:
+payload, not the rendered DOM, is the high-fidelity source. Seven extractors run over every page,
+and an eighth source reaches what no page renders:
 
 | Extractor | Reads | Records |
 |---|---|---|
@@ -110,7 +111,8 @@ payload, not the rendered DOM, is the high-fidelity source. Seven extractors run
 | `jobs.py` | nested `prompt:{{prompt:"…"}}` job records with `jobSetType`, preset, quality, aspect ratio, duration and the job's own `media:` block | {src.get('job_payload',0):,} |
 | `recreate.py` | `?recreate=<prompt>&model=<model>` hrefs behind "Recreate" buttons | {src.get('recreate_link',0):,} |
 | `figures.py` | `<figcaption>` / `aria-label` on demo figures, plus platform/tier badges | {src.get('figure_caption',0):,} |
-| `pbank.py` | the Academy Prompt Bank's `{{title, prompt, categoryId, media}}` records | {src.get('prompt_bank',0):,} |
+| `pbank.py` | the Academy Prompt Bank's `{{title, prompt, categoryId, media}}` records, across every `?page=` | {src.get('prompt_bank',0):,} |
+| `api_feeds.py` | the community feeds' public JSON gateway — the pages of each feed that SSR never renders, and Seedance 2.5's prompt text | {src.get('api_feed',0):,} |
 
 ### Pairing each prompt to its asset
 
