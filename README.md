@@ -25,7 +25,9 @@ Excel/CSV dataset, a browsable HTML gallery, and a print-ready PDF.
 Every record carries the full prompt text, a description of what it creates, the associated model or
 motion effect, the source page URL — and **the asset it produced**. Open
 [`assets/gallery.html`](assets/gallery.html) to browse prompts beside their results, or filter the
-spreadsheet by model, style, or subject.
+spreadsheet by model, style, or subject. For the whole corpus at once there is a WebGPU view in
+[`web/`](web/) — 2,619 generations in one instanced mesh, rearrangeable and physics-enabled; see
+section 7.
 
 Thumbnails (512px WebP) are committed so the gallery and PDF work straight from a clone. The
 full-resolution originals are **not** in the repo — that is 3,686 distinct files (the 4,953
@@ -253,6 +255,7 @@ Patterns that recur across the high-fidelity records:
 | `data/higgsfield_prompt_dataset.json` | JSON | Structured records for programmatic use |
 | `assets/manifest.csv` / `.json` | CSV/JSON | Every asset: record, role, type, full-res URL, poster, thumbnail path |
 | `assets/thumbs/*.webp` | WebP | 5,144 thumbnails (99 MB) |
+| `web/` | WebGPU | **3D atlas** — all 2,619 paired records in one instanced mesh, with real-time physics. See section 7 |
 
 ### Column reference
 
@@ -321,7 +324,82 @@ the spreadsheet.
 
 ---
 
-## 7. Reproducing
+## 7. The 3D atlas
+
+`web/` is an interactive view of the same 2,619 paired records: every generation is a tile in a
+single instanced mesh you fly through, search, rearrange and knock over.
+
+```bash
+python3 -m http.server 8080      # from the repository root
+# then open http://localhost:8080/web/
+```
+
+It has to be served over HTTP. Opening `web/index.html` from disk fails twice over — ES modules and
+`fetch` are blocked on `file://`, and `navigator.gpu` is only exposed in a secure context, which
+`localhost` satisfies and `file://` does not. The page says so if you try.
+
+### What it does
+
+| | |
+|---|---|
+| **Grid** | every record, ordered by tool type then model |
+| **Sphere** | a shell packed at surface density — the whole corpus at once |
+| **Helix** | a spiral column you can fly down |
+| **By model** | the twelve largest models as labelled clusters on a carousel, the tail rolled into one |
+| **By length** | a histogram: six labelled towers, from *no prompt text* to *500+ words* |
+| **Physics** | every tile becomes a rigid body and the arrangement collapses into a pile you can shove |
+
+Search and the four filters drive the arrangement rather than sitting beside it: matched records
+re-flow to fill whichever shape is selected while everything else recedes to a dim outer shell, so
+the shape on screen is always the shape of the query. Hovering names a record, clicking opens the
+full prompt with a copy button, the source page, the full-resolution original and the same
+`record_id` the exports use — and the URL carries it, so any record is linkable.
+
+### How it is built
+
+**Rendering** — three.js r185 `WebGPURenderer`. All 2,619 tiles are one `InstancedMesh` drawn in a
+**single draw call**; the atlas-cell lookup, filter dimming, focus lift and rounded corners are
+written in TSL, so one source compiles to WGSL on WebGPU and GLSL on the WebGL 2 fallback. The
+badge in the header tells you which backend you actually got. Thumbnails are packed by
+`tools/build_web.py` into one 4096² atlas of 64px cells (2048²/32px on small screens), because a
+single draw call means a single texture.
+
+**Physics** — Rapier 0.20, SIMD build, loaded only when you enter physics mode. The engine was
+chosen by benchmarking the real workload — 2,619 thin boxes collapsing into a pile, 240 steps,
+single-threaded, mean milliseconds per step:
+
+| engine | mean | median | p95 | headroom |
+|---|---|---|---|---|
+| **`@dimforge/rapier3d-simd` 0.20.0** | **7.94 ms** | 8.70 | 15.0 | 126 fps |
+| `@dimforge/rapier3d` 0.20.0 | 11.93 ms | 14.5 | 23.6 | 84 fps |
+| `jolt-physics` 1.1.0 | 33.28 ms | 50.7 | 63.9 | 30 fps |
+
+The SIMD build is 1.5× the plain one and 4.2× Jolt here, so it is the default; `simd128` is
+feature-detected at runtime and the plain build is loaded instead where it is missing. Jolt can use
+worker threads that this comparison did not give it, but that needs cross-origin isolation
+(COOP/COEP headers) which a static file server does not send — single-threaded is the honest
+comparison for how this page is actually served.
+
+**Dependencies are vendored** in `web/vendor/` (three 3.6 MB, Rapier 5.9 MB across both builds) so
+the page works offline from a clone, exactly like the committed thumbnails. Only one Rapier build is
+ever fetched at runtime, and only if you enter physics mode.
+
+### Regenerating
+
+```bash
+python3 tools/build_web.py              # both atlas tiers + web/data/records.json
+python3 tools/build_web.py --tier high  # just the 4096² desktop atlas
+```
+
+### Browser support
+
+WebGPU where available, automatic WebGL 2 fallback everywhere else — the same scene, the same
+shaders, no separate code path. Append `?webgl=1` to force the fallback and compare. The atlas drops
+to the 32px tier and the controls become a bottom strip below 820px wide.
+
+---
+
+## 8. Reproducing
 
 Every script is run **from the repository root** — they resolve `assets/`, `deliverables/` and
 their intermediates relative to the working directory, not to `tools/`.
@@ -372,7 +450,7 @@ pip install -r requirements.txt   # Pillow, openpyxl, reportlab
 
 ---
 
-## 8. Known limitations
+## 9. Known limitations
 
 Stated plainly rather than papered over:
 
@@ -395,13 +473,21 @@ Stated plainly rather than papered over:
    correct, but filter on `media_pairing` if you need only exact pairs.
 5. **Mixed-media presets have boilerplate descriptions.** The site serves a generic string for them;
    it is nulled out rather than presented as a real description.
-6. **125 records have no asset at all** — chiefly article prompts with no nearby image. A further
+6. **The 3D atlas needs an HTTP server and a GPU.** `web/` cannot run from `file://` (ES modules,
+   `fetch`, and `navigator.gpu`'s secure-context requirement all rule it out), and the desktop atlas
+   holds a 4096² texture — roughly 67 MB of VRAM — so small-screen devices are served a 32px tier at
+   about 17 MB instead. WebGPU rendering was verified running clean at 60 fps with 2,619 rigid
+   bodies, but its output could not be pixel-captured in the build container: headless Chrome cannot
+   screenshot a WebGPU swapchain there and its software Dawn instance refuses buffer readback. The
+   pixels were verified through the WebGL 2 fallback, which renders the same scene from the same
+   TSL source.
+7. **125 records have no asset at all** — chiefly article prompts with no nearby image. A further
    three have a full-resolution URL but no committed thumbnail (the fetch failed at build time), so
    the gallery, which is driven by thumbnails, shows 2,619 of the 2,622 paired records.
 
 ---
 
-## 9. Provenance
+## 10. Provenance
 
 Retrieved from publicly accessible pages on higgsfield.ai on 2026-09-04, honouring `robots.txt`.
 Prompt text, preset names, effect descriptions and generated media are Higgsfield's and their
