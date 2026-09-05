@@ -88,9 +88,15 @@ def main():
             if not sizes:
                 lines.append(f"  {kind:6} {len(pool):5} assets — could not size any sample")
                 continue
+            # One CDN answers HEAD with 403 for assets it serves over a plain GET, so
+            # part of a sample can come back unsized. Those assets are still projected,
+            # at the mean of the ones that answered — say how many, so a skewed sample
+            # is visible rather than silent.
+            refused = len(sample) - len(sizes)
             mean = statistics.mean(sizes)
             total += len(pool) * mean
-            lines.append(f"  {kind:6} {len(pool):5} assets, sampled {len(sizes):3}: "
+            lines.append(f"  {kind:6} {len(pool):5} assets, sampled {len(sizes):3}"
+                         f"{f' ({refused} unsized)' if refused else ''}: "
                          f"median {statistics.median(sizes)/1048576:5.2f} MB, "
                          f"mean {mean/1048576:5.2f} MB -> {len(pool)*mean/1073741824:5.1f} GB")
         if not total:
