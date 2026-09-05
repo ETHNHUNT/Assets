@@ -345,7 +345,7 @@ It has to be served over HTTP. Opening `web/index.html` from disk fails twice ov
 | **Grid** | every record, ordered by tool type then model |
 | **Sphere** | a shell packed at surface density — the whole corpus at once |
 | **Helix** | a spiral column you can fly down |
-| **By model** | the twelve largest models as labelled clusters on a carousel, the tail rolled into one |
+| **By model** | the twelve largest models as labelled blocks, the tail rolled into one — small multiples, so block sizes compare directly |
 | **By length** | a histogram: six labelled towers, from *no prompt text* to *500+ words* |
 | **Physics** | every tile becomes a rigid body and the arrangement collapses into a pile you can shove |
 
@@ -354,6 +354,17 @@ re-flow to fill whichever shape is selected while everything else recedes to a d
 the shape on screen is always the shape of the query. Hovering names a record, clicking opens the
 full prompt with a copy button, the source page, the full-resolution original and the same
 `record_id` the exports use — and the URL carries it, so any record is linkable.
+
+![Sphere arrangement](web/docs/sphere.png)
+
+*All 2,619 records packed into a shell. Every frame in this section was read back
+off the GPU on the WebGPU backend, not screenshotted.*
+
+![By length](web/docs/by-length.png)
+
+*By length — six labelled towers. 1,072 records land in the 76–200 word band; the
+538 presets that publish no prompt get their own bucket rather than inflating the
+short one.*
 
 ### How it is built
 
@@ -390,6 +401,26 @@ ever fetched at runtime, and only if you enter physics mode.
 python3 tools/build_web.py              # both atlas tiers + web/data/records.json
 python3 tools/build_web.py --tier high  # just the 4096² desktop atlas
 ```
+
+### Verifying it headlessly
+
+Headless Chrome cannot screenshot a WebGPU swapchain — you get a blank frame while the page is
+demonstrably rendering. The working recipe is three.js's own E2E setup (`test/e2e/puppeteer.js`):
+run **headed under Xvfb**, pin the software Vulkan driver, and add `--disable-vulkan-surface`.
+
+```bash
+sudo apt-get install -y mesa-vulkan-drivers xvfb
+export VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json
+# chrome flags: --enable-unsafe-webgpu --enable-features=Vulkan --disable-vulkan-surface
+#               --ignore-gpu-blocklist --disable-gpu-driver-bug-workarounds
+#               --disable-gpu-watchdog --no-sandbox
+```
+
+Without `--disable-vulkan-surface` the Dawn instance is dropped and even `readRenderTargetPixelsAsync`
+fails. With it, read the frame off the GPU rather than screenshotting it — `window.__atlas` exposes
+the renderer, scene and camera for exactly this. Two things to watch: `navigator.gpu` only exists in
+a secure context, so serve over `localhost`; and WebGPU requires `bytesPerRow % 256 == 0`, so read
+back at a width that is a multiple of 64 (1024 works, 900 gives you diagonal streaks).
 
 ### Browser support
 
@@ -473,14 +504,10 @@ Stated plainly rather than papered over:
    correct, but filter on `media_pairing` if you need only exact pairs.
 5. **Mixed-media presets have boilerplate descriptions.** The site serves a generic string for them;
    it is nulled out rather than presented as a real description.
-6. **The 3D atlas needs an HTTP server and a GPU.** `web/` cannot run from `file://` (ES modules,
-   `fetch`, and `navigator.gpu`'s secure-context requirement all rule it out), and the desktop atlas
-   holds a 4096² texture — roughly 67 MB of VRAM — so small-screen devices are served a 32px tier at
-   about 17 MB instead. WebGPU rendering was verified running clean at 60 fps with 2,619 rigid
-   bodies, but its output could not be pixel-captured in the build container: headless Chrome cannot
-   screenshot a WebGPU swapchain there and its software Dawn instance refuses buffer readback. The
-   pixels were verified through the WebGL 2 fallback, which renders the same scene from the same
-   TSL source.
+6. **The 3D atlas needs an HTTP server and a GPU.** `web/` cannot run from `file://` — ES modules,
+   `fetch`, and `navigator.gpu`'s secure-context requirement all rule it out, and the page says so
+   if you try. The desktop atlas holds a 4096² texture, roughly 67 MB of VRAM, so small-screen
+   devices are served a 32px tier at about 17 MB instead.
 7. **125 records have no asset at all** — chiefly article prompts with no nearby image. A further
    three have a full-resolution URL but no committed thumbnail (the fetch failed at build time), so
    the gallery, which is driven by thumbnails, shows 2,619 of the 2,622 paired records.

@@ -289,6 +289,11 @@ function buildLabels() {
   labelGroup = new THREE.Group();
   for (const L of groupLabels) {
     const m = makeLabel(L.text, L.count);
+    // a label wider than its own block collides with its neighbours
+    if (L.maxW) {
+      const w = m.geometry.parameters.width;
+      if (w > L.maxW) m.scale.setScalar(Math.max(0.42, L.maxW / w));
+    }
     m.position.copy(L.pos);
     m.quaternion.copy(L.q);
     labelGroup.add(m);
@@ -359,6 +364,11 @@ function layout(next, instant) {
       const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, a, 0));
       out[idx] = [v.x, v.y, v.z, q];
     });
+  } else if (mode === 'physics') {
+    for (const idx of list) {
+      const a = idx * 3;
+      out[idx] = [posCur[a], posCur[a + 1], posCur[a + 2], FLAT];
+    }
   } else if (mode === 'towers') {
     // ordered buckets, so this is a histogram: five towers you read left to
     // right, each one image-deep. A ring would hide half of it.
@@ -409,32 +419,48 @@ function layout(next, instant) {
       if (rest.length) { const label = `${tail.length} smaller models`; groups.set(label, rest); keys.push(label); }
     }
 
-    // ring circumference follows the real footprint of each cluster, so groups
-    // sit shoulder to shoulder however lopsided the distribution is
-    const PITCH = 1.4;
+    // Small multiples, not a ring. One model holds 1,338 of the 2,619 records,
+    // so a ring gives wildly unequal groups equal angular space and you can
+    // only ever see a narrow arc of it. Blocks in rows all face the camera:
+    // nothing shows its back, no label overlaps another, sizes compare directly.
+    const PITCH = 1.4, GAP_X = PITCH * 3.4, GAP_Y = PITCH * 6.4;
     const dims = keys.map((k) => {
       const m = groups.get(k).length;
-      const cols = Math.max(1, Math.round(Math.sqrt(m * 1.5)));
-      return { cols, rows: Math.ceil(m / cols), w: cols * PITCH };
+      const cols = Math.max(2, Math.round(Math.sqrt(m * 1.9)));
+      const rows = Math.ceil(m / cols);
+      return { cols, rows, w: cols * PITCH, h: rows * PITCH };
     });
-    const totalW = dims.reduce((a, d) => a + d.w, 0) * 1.45;
-    const ring = Math.max(26, totalW / (2 * Math.PI));
 
-    let acc = 0;
-    keys.forEach((k, gi) => {
-      const members = groups.get(k), d = dims[gi];
-      const a = ((acc + d.w * 0.725) / totalW) * Math.PI * 2;
-      acc += d.w * 1.45;
-      const cx = Math.cos(a) * ring, cz = Math.sin(a) * ring;
-      const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, -a + Math.PI / 2, 0));
-      members.forEach((idx, k2) => {
-        const c = k2 % d.cols, r = Math.floor(k2 / d.cols);
-        const lx = (c - d.cols / 2 + 0.5) * PITCH, ly = -(r - d.rows / 2 + 0.5) * PITCH;
-        const v = new THREE.Vector3(lx, ly, 0).applyQuaternion(q);
-        out[idx] = [cx + v.x, v.y, cz + v.z, q];
+    // pack into rows aiming at a roughly 16:9 overall footprint
+    const area = dims.reduce((a, d) => a + (d.w + GAP_X) * (d.h + GAP_Y), 0);
+    const target = Math.sqrt(area * (16 / 9));
+    const lines = [];
+    let cur = [], curW = 0;
+    dims.forEach((d, gi) => {
+      if (cur.length && curW + d.w + GAP_X > target) { lines.push({ items: cur, w: curW }); cur = []; curW = 0; }
+      cur.push(gi); curW += d.w + GAP_X;
+    });
+    if (cur.length) lines.push({ items: cur, w: curW });
+
+    const lineH = lines.map((L) => Math.max(...L.items.map((gi) => dims[gi].h)) + GAP_Y);
+    const totalH = lineH.reduce((a, b) => a + b, 0);
+    let y = totalH / 2;
+    lines.forEach((L, li) => {
+      let x = -L.w / 2;
+      const top = y, bottom = y - lineH[li];
+      L.items.forEach((gi) => {
+        const k = keys[gi], members = groups.get(k), d = dims[gi];
+        const cx = x + d.w / 2, cy = bottom + GAP_Y * 0.55 + d.h / 2;
+        x += d.w + GAP_X;
+        members.forEach((idx, k2) => {
+          const c = k2 % d.cols, r = Math.floor(k2 / d.cols);
+          out[idx] = [cx + (c - d.cols / 2 + 0.5) * PITCH,
+                      cy - (r - d.rows / 2 + 0.5) * PITCH, 0, FLAT];
+        });
+        groupLabels.push({ text: k, count: members.length, q: FLAT, maxW: d.w + GAP_X * 0.8,
+                           pos: new THREE.Vector3(cx, cy + d.h / 2 + 2.9, 0) });
       });
-      groupLabels.push({ text: k, count: members.length, q,
-                         pos: new THREE.Vector3(cx, d.rows * PITCH / 2 + 2.2, cz) });
+      y = bottom;
     });
   }
 
@@ -670,16 +696,31 @@ function selectById(id, instant) {
 function frameCamera(preferDir) {
   const box = new THREE.Box3();
   const v = new THREE.Vector3();
+  const src = physReady ? posCur : posTo;   // the sim owns positions in physics mode
   let any = false;
   for (let i = 0; i < N; i++) {
     if (!active[i]) continue;
-    box.expandByPoint(v.set(posTo[i * 3], posTo[i * 3 + 1], posTo[i * 3 + 2]));
+    box.expandByPoint(v.set(src[i * 3], src[i * 3 + 1], src[i * 3 + 2]));
     any = true;
   }
+  for (const L of groupLabels) box.expandByPoint(v.copy(L.pos).addScalar(1.6));
   if (!any) return;
   const centre = box.getCenter(new THREE.Vector3());
-  const radius = Math.max(6, box.getSize(new THREE.Vector3()).length() * 0.5);
-  const dist = radius / Math.sin((camera.fov * Math.PI / 180) / 2) * 0.62;
+  const size = box.getSize(new THREE.Vector3());
+  // Fit the box against both FOV axes. A bounding-sphere fudge factor is fine
+  // for the sphere but crops the helix top and bottom and the towers at the
+  // sides, because those are nothing like spherical.
+  const tanV = Math.tan((camera.fov * Math.PI / 180) / 2);
+  const tanH = tanV * camera.aspect;
+  const depth = size.z * 0.5;
+  const dist = Math.max(6,
+    (size.y * 0.5) / tanV + depth,
+    (size.x * 0.5) / tanH + depth) * 1.06;
+  // One fixed fog density cannot serve a 40-unit grid and a 300-unit carousel:
+  // tie it to the framed distance so every arrangement gets the same amount of
+  // atmosphere instead of the big ones going black.
+  if (scene.fog) scene.fog.density = Math.min(0.02, Math.max(0.0007, 0.5 / dist));
+
   const dir = preferDir ? preferDir.clone().normalize()
                         : camera.position.clone().sub(controls.target).normalize();
   if (!isFinite(dir.x) || dir.lengthSq() < 1e-6) dir.set(0, 0.18, 1).normalize();
@@ -694,7 +735,7 @@ function frameCamera(preferDir) {
   fly = { t: 0, fromT: controls.target.clone(), toT, fromP: camera.position.clone(), toP };
 }
 
-let fly = null;
+let fly = null, physFrameTimer = 0;
 function flyTo(i) {
   const a = i * 3;
   const target = new THREE.Vector3(posCur[a], posCur[a + 1], posCur[a + 2]);
@@ -720,11 +761,18 @@ function buildUI() {
       [...modes.children].forEach((c) => c.classList.toggle('on', c === b));
       $('#foot').classList.toggle('phys', k === 'physics');
       const elevated = new THREE.Vector3(0, 0.62, 1);
-      if (k === 'physics') { layout('physics'); await startPhysics(); frameCamera(elevated); }
+      if (k === 'physics') {
+        layout('physics');
+        await startPhysics();
+        frameCamera(elevated);
+        // the pile spreads as it falls, so fit it again once it has settled
+        clearTimeout(physFrameTimer);
+        physFrameTimer = setTimeout(() => { if (physReady) frameCamera(elevated); }, 2600);
+      }
       else {
         layout(k);
-        frameCamera(k === 'clusters' ? elevated
-          : k === 'towers' ? new THREE.Vector3(0, 0.16, 1) : undefined);
+        frameCamera(k === 'clusters' || k === 'towers'
+          ? new THREE.Vector3(0, 0.13, 1) : undefined);
       }
     };
     modes.appendChild(b);
@@ -857,7 +905,10 @@ function tick() {
   if (labelGroup) {
     const a = physReady ? 0 : morph;
     labelGroup.visible = a > 0.05;
-    labelGroup.children.forEach((m) => { m.material.opacity = a; });
+    labelGroup.children.forEach((m) => {
+      m.material.opacity = a;
+      m.quaternion.copy(camera.quaternion);
+    });
   }
   if (dust) dust.rotation.y += dt * 0.006;
   controls.update();
