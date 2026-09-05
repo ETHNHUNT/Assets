@@ -15,7 +15,11 @@ Each barren page lands in one of four buckets:
                         dataset under another URL — the pipeline dedupes across pages,
                         so a listing and its example pages yield one record between them
   uncaptured            the page holds prompt text that appears nowhere in the dataset
-                        — the only bucket that is a real extractor gap
+                        — the only barren bucket that is a real extractor gap
+
+Pages that DID produce a record are checked for the same thing and reported separately as
+`produced_but_incomplete`: contributing one prompt is no guarantee a page gave up all of
+them, and auditing only the barren pages understates the gap.
 
 Bucketing by "did this URL appear as a source_url" alone would call the third bucket a
 miss, which is why it is checked against every prompt in the dataset, not just the ones
@@ -126,8 +130,19 @@ def main():
             counts["unreadable"] += 1
             continue
         if url in produced:
+            # A page that yielded a record can still be hiding others: the first version
+            # of this audit skipped these entirely and so reported the extractor gap as
+            # 22 prompts when it was 28. Check them too, and count separately — a page
+            # that contributed is not "barren" however many prompts it also withheld.
             counts["produced_a_record"] += 1
             by_shape[shape(url)]["produced"] += 1
+            _, _, missing = classify(html, captured)
+            if missing:
+                counts["produced_but_incomplete"] += 1
+                rows.append({"url": url, "file": f, "bucket": "produced_but_incomplete",
+                             "prompt_field_hits": 0, "bytes": len(html),
+                             "uncaptured_count": len(missing),
+                             "uncaptured_examples": [t[:300] for t in missing[:3]]})
             continue
         bucket, hits, missing = classify(html, captured)
         counts[bucket] += 1
@@ -159,7 +174,7 @@ def main():
         print(f"  {sh[:40]:40s} {c['produced']:5d} {c['no_payload']:6d} "
               f"{c['payload_no_prompt']:8d} {c['captured_elsewhere']:9d} {c['uncaptured']:6d}")
 
-    missed = [r for r in rows if r["bucket"] == "uncaptured"]
+    missed = [r for r in rows if r["bucket"] in ("uncaptured", "produced_but_incomplete")]
     lost = sum(r["uncaptured_count"] for r in missed)
     print(f"\n{len(missed)} page(s) hold prompt text found nowhere in the dataset "
           f"({lost} prompt(s) in total)")
