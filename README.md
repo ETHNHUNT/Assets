@@ -8,14 +8,14 @@ Excel/CSV dataset, a browsable HTML gallery, and a print-ready PDF.
 |---|---|
 | **Pages crawled** | 5,121 (0 fetch errors) |
 | **URLs mapped** | 5,124 unique public URLs |
-| **Records extracted** | **3,036** |
-| — literal prompts | 2,498 |
+| **Records extracted** | **3,064** |
+| — literal prompts | 2,526 |
 | — presets / motion effects | 538 |
-| **Records with a paired asset** | 2,911 (95.9%) — 2,908 of them with a committed thumbnail |
-| **Assets catalogued** | 5,242 |
-| **Thumbnails committed** | 5,433 WebP (105 MB) |
-| **Prompt text captured** | ~3.09M characters |
-| **Prompt length** | 2–3,287 words (median 104) |
+| **Records with a paired asset** | 2,939 (95.9%) — 2,936 of them with a committed thumbnail |
+| **Assets catalogued** | 5,270 |
+| **Thumbnails committed** | 5,461 WebP (105 MB) |
+| **Prompt text captured** | ~3.14M characters |
+| **Prompt length** | 2–3,287 words (median 105) |
 | **Crawl date** | 2026-09-04 (SSR crawl) · 2026-09-05 (API feeds, see section 3) |
 
 ---
@@ -26,11 +26,11 @@ Every record carries the full prompt text, a description of what it creates, the
 motion effect, the source page URL — and **the asset it produced**. Open
 [`assets/gallery.html`](assets/gallery.html) to browse prompts beside their results, or filter the
 spreadsheet by model, style, or subject. For the whole corpus at once there is a WebGPU view in
-[`web/`](web/) — 2,908 generations in one instanced mesh, rearrangeable and physics-enabled; see
+[`web/`](web/) — 2,936 generations in one instanced mesh, rearrangeable and physics-enabled; see
 section 7.
 
 Thumbnails (512px WebP) are committed so the gallery and PDF work straight from a clone. The
-full-resolution originals are **not** in the repo — that is 3,975 distinct files (the 5,242
+full-resolution originals are **not** in the repo — that is 3,998 distinct files (the 5,270
 catalogued assets include reuse of the same URL across records), and **roughly 20–30 GB** of PNG
 and MP4. Videos dominate it and their sizes are long-tailed, so measure before you commit to a
 pull rather than trusting a single figure:
@@ -80,7 +80,7 @@ first page renders are in the dataset too, merged into `flat_prompts.py` records
 
 | Extractor | Reads | Records |
 |---|---|---|
-| `flat_prompts.py` | flat `prompt:"…"` records, incl. academy lesson `video_cues` with `recreate_url`, shot timestamps and lesson media | 1,460 |
+| `flat_prompts.py` | flat `prompt:"…"` records, incl. academy lesson `video_cues` with `recreate_url`, shot timestamps and lesson media | 1,488 |
 | `catalog.py` | motion / viral / mixed-media preset pages: name, description, model, preview video + creator examples | 538 |
 | `prose.py` | long `<p>`/`<pre>`/`<blockquote>` blocks in blog and academy articles, classifier-gated | 363 |
 | `jobs.py` | nested `prompt:{prompt:"…"}` job records with `jobSetType`, preset, quality, aspect ratio, duration and the job's own `media:` block | 201 |
@@ -135,7 +135,7 @@ filtered out:
 
 | Pairing method | Records |
 |---|---|
-| payload-proximity | 1402 |
+| payload-proximity | 1430 |
 | preset-preview | 538 |
 | proximity | 331 |
 | lesson | 181 |
@@ -163,7 +163,7 @@ For figure captions a page-frequency rule does the heavy lifting — a caption a
 three distinct pages is boilerplate, not a prompt.
 
 Every record is graded **High / Medium / Low** confidence.
-2,953 of 3,036 (97%) are High.
+2,981 of 3,064 (97%) are High.
 
 ---
 
@@ -178,7 +178,7 @@ Every record is graded **High / Medium / Low** confidence.
 | Motion Effect Preset | 442 |
 | Editorial / Tutorial Prompt | 313 |
 | Image Generation | 277 |
-| Lesson / Course Prompt | 177 |
+| Lesson / Course Prompt | 205 |
 | Viral Preset | 63 |
 | Mixed Media Preset | 33 |
 | Camera Movement Prompt | 21 |
@@ -205,11 +205,11 @@ Every record is graded **High / Medium / Low** confidence.
 | Mixed Media | 33 |
 | Kling 3.0 | 31 |
 | kling-v2-1-master | 29 |
+| Higgsfield Soul | 29 |
 | GPT Image 2 | 29 |
 | Sora 2 | 28 |
-| seedance_pro | 25 |
 
-619 records carry no attributable model — mostly
+627 records carry no attributable model — mostly
 model-agnostic blog and academy pages. Where the URL or a `recreate_url` names one it is used;
 otherwise the field is left empty rather than guessed.
 
@@ -217,15 +217,15 @@ otherwise the field is left empty rather than guessed.
 
 | Style | Records |
 |---|---|
-| Cinematic / Film | 801 |
-| Product / Commercial | 766 |
-| Glitch / Experimental | 465 |
-| Photorealistic | 316 |
-| UGC / Handheld | 276 |
-| Fashion / Editorial | 247 |
-| Retro / VHS / Analog | 242 |
-| Noir / Moody | 197 |
-| Fantasy / Sci-Fi | 186 |
+| Cinematic / Film | 802 |
+| Product / Commercial | 778 |
+| Glitch / Experimental | 466 |
+| Photorealistic | 317 |
+| UGC / Handheld | 287 |
+| Fashion / Editorial | 252 |
+| Retro / VHS / Analog | 248 |
+| Noir / Moody | 198 |
+| Fantasy / Sci-Fi | 189 |
 | Horror / Thriller | 114 |
 | 3D / CGI Render | 109 |
 | Aerial / Drone | 106 |
@@ -234,25 +234,25 @@ otherwise the field is left empty rather than guessed.
 
 | Subject | Records |
 |---|---|
-| People / Portrait | 2595 |
-| Architecture / Interior | 1075 |
-| Landscape / Nature | 952 |
-| Abstract / Texture | 875 |
-| Product / Object | 620 |
-| Vehicles / Transport | 473 |
-| Text / Logo / Graphic | 339 |
-| Food / Drink | 333 |
-| Animals / Creatures | 309 |
+| People / Portrait | 2623 |
+| Architecture / Interior | 1092 |
+| Landscape / Nature | 962 |
+| Abstract / Texture | 891 |
+| Product / Object | 636 |
+| Vehicles / Transport | 479 |
+| Text / Logo / Graphic | 344 |
+| Food / Drink | 340 |
+| Animals / Creatures | 313 |
 
 ### By prompt length
 
 | Words | Prompts |
 |---|---|
 | 1–25 | 314 |
-| 26–75 | 561 |
-| 76–200 | 1157 |
-| 201–500 | 229 |
-| 500+ | 237 |
+| 26–75 | 565 |
+| 76–200 | 1171 |
+| 201–500 | 232 |
+| 500+ | 244 |
 
 The bimodality is deliberate — Higgsfield's own Sora 2 guide teaches "two formulas": short
 high-signal prompts that let the model direct, and high-control prompts specifying every shot. The
@@ -286,19 +286,19 @@ Patterns that recur across the high-fidelity records:
 
 | File | Format | Contents |
 |---|---|---|
-| `assets/gallery.html` | HTML | **Visual index** — the 2,908 records with a committed thumbnail, each prompt beside what it generated. Search and filters by tool, model and pairing method; copy any prompt to the clipboard; click a thumbnail for the full-resolution original |
+| `assets/gallery.html` | HTML | **Visual index** — the 2,936 records with a committed thumbnail, each prompt beside what it generated. Search and filters by tool, model and pairing method; copy any prompt to the clipboard; click a thumbnail for the full-resolution original |
 | `data/higgsfield_prompt_dataset.xlsx` | Excel | 4 sheets — All Records, Prompts, Presets and Effects, Summary |
-| `data/higgsfield_prompts_full.csv` | CSV | All 3,036 records, 31 columns, UTF-8 BOM + fully quoted |
-| `data/higgsfield_prompts_only.csv` | CSV | The 2,498 literal prompts |
+| `data/higgsfield_prompts_full.csv` | CSV | All 3,064 records, 31 columns, UTF-8 BOM + fully quoted |
+| `data/higgsfield_prompts_only.csv` | CSV | The 2,526 literal prompts |
 | `data/higgsfield_presets_effects.csv` | CSV | The 538 presets / motion effects |
 | `data/higgsfield_summary.csv` | CSV | Cross-tabs by tool, model, style, subject, section, source, confidence |
 | `data/higgsfield_prompt_dataset.pdf` | PDF | Formatted catalogue with **thumbnails printed beside each prompt** |
 | `data/higgsfield_prompt_dataset.json` | JSON | Structured records for programmatic use |
 | `assets/manifest.csv` / `.json` | CSV/JSON | Every asset: record, role, type, full-res URL, poster, thumbnail path |
-| `assets/thumbs/*.webp` | WebP | 5,433 thumbnails (105 MB) |
+| `assets/thumbs/*.webp` | WebP | 5,461 thumbnails (105 MB) |
 | `data/api_feeds.json` | JSON | The raw harvest behind the 289 gateway records — every feed's items, its model filter, and why its cursor walk stopped. Re-derivable with `tools/api_feeds.py` |
 | `data/barren_audit.json` | JSON | Per-URL verdict for all 5,121 crawled pages, the evidence behind limitation 7. Re-derivable with `tools/audit_barren.py` after a re-crawl |
-| `web/` | WebGPU | **3D atlas** — all 2,908 thumbnailed records in one instanced mesh, with real-time physics. See section 7 |
+| `web/` | WebGPU | **3D atlas** — all 2,936 thumbnailed records in one instanced mesh, with real-time physics. See section 7 |
 
 ### Column reference
 
@@ -308,7 +308,7 @@ headers. Empty means "not established", never "zero" — nothing is guessed to f
 | Column (CSV / Excel) | JSON key | What it holds |
 |---|---|---|
 | Record ID | `record_id` | SHA-1 of prompt + name + source URL, truncated to 16 hex. The join key, and the thumbnail filename stem |
-| Record Type | `record_type` | `Prompt` (2,498) or `Preset / Effect` (538) |
+| Record Type | `record_type` | `Prompt` (2,526) or `Preset / Effect` (538) |
 | Name | `name` | Preset or effect name; for article and lesson prompts, the heading it sat under |
 | Prompt Text | `prompt_text` | The prompt verbatim, line breaks preserved. Empty for presets that publish no prompt |
 | Description | `description` | What the preset or effect produces, in the site's words. Nulled where the site serves boilerplate |
@@ -333,10 +333,10 @@ headers. Empty means "not established", never "zero" — nothing is guessed to f
 | Recreate Model | `recreate_model` | Model named by a "Recreate" link, where the record came from one |
 | Lesson | `lesson_title` | Academy lesson the prompt's shot appears in |
 | Lesson Timestamp (s) | `timestamp_in_lesson` | Offset of that shot within the lesson video |
-| Confidence | `confidence` | `High` (2,953) / `Medium` (19) / `Low` (64) — how sure the extractor is this is a real prompt |
+| Confidence | `confidence` | `High` (2,981) / `Medium` (19) / `Low` (64) — how sure the extractor is this is a real prompt |
 | Site Section | `site_section` | Which part of the site the source page belongs to |
 | Extraction Source | `extraction_source` | Which of the seven extractors produced the record — see section 3 |
-| Sample Media URL | `media_url` | The media URL as it appeared in the payload. Identical to `full_res_url` for 2,901 of 2,911 records; it differs only where the payload pointed at a variant |
+| Sample Media URL | `media_url` | The media URL as it appeared in the payload. Identical to `full_res_url` for 2,929 of 2,939 records; it differs only where the payload pointed at a variant |
 | Source Page URL | `source_url` | The public page the record was read from |
 
 Three fields exist in the JSON but not in the flat exports, because they do not fit one cell:
@@ -369,7 +369,7 @@ the spreadsheet.
 
 ## 7. The 3D atlas
 
-`web/` is an interactive view of the same 2,908 paired records: every generation is a tile in a
+`web/` is an interactive view of the same 2,936 paired records: every generation is a tile in a
 single instanced mesh you fly through, search, rearrange and knock over.
 
 ```bash
@@ -408,7 +408,7 @@ pipeline — not screenshotted.*
 
 ![Sphere arrangement](web/docs/sphere.png)
 
-*All 2,908 records packed into a shell.*
+*All 2,936 records packed into a shell.*
 
 ![By length](web/docs/by-length.png)
 
@@ -418,7 +418,7 @@ short one.*
 
 ### How it is built
 
-**Rendering** — three.js r185 `WebGPURenderer`. All 2,908 tiles are one `InstancedMesh` drawn in a
+**Rendering** — three.js r185 `WebGPURenderer`. All 2,936 tiles are one `InstancedMesh` drawn in a
 **single draw call**; the atlas-cell lookup, filter dimming, focus lift and rounded corners are
 written in TSL, so one source compiles to WGSL on WebGPU and GLSL on the WebGL 2 fallback. The
 badge in the header tells you which backend you actually got. Thumbnails are packed by
@@ -477,7 +477,7 @@ In physics mode the pile is audible. Rapier's contact-force events drive short b
 clicks, pitched and gained by impact strength. The threshold was measured rather than guessed: with
 it set to zero, nine seconds of a collapsing pile produced 681 contact events spanning 0 to 2.4 N,
 so it sits at 0.9 to keep the fifth that read as real knocks. Voices are capped at five per frame —
-2,908 bodies settling would otherwise fan out into noise — and everything runs through a compressor.
+2,936 bodies settling would otherwise fan out into noise — and everything runs through a compressor.
 
 **Motion** is the part that took the most measuring. Profiling the running page first
 (`window.__atlas` exposes the renderer, scene, camera and mesh, so this needed no instrumentation)
@@ -490,7 +490,7 @@ showed the frame was not spent where it looked:
 | dim/focus easing, every frame | 0.375 ms | **0.08 ms**, and skipped entirely at rest |
 
 Hovering, in other words, was costing over half a 60 fps budget — spent precisely while the user was
-interacting. `InstancedMesh.raycast` walks all 2,908 instances and runs a full mesh intersection on
+interacting. `InstancedMesh.raycast` walks all 2,936 instances and runs a full mesh intersection on
 each; a BVH does not help, because the geometry is a two-triangle quad and the cost is the instance
 loop, not the triangle count. A broad phase fixes it: reject by perpendicular distance from the ray
 using the centre already held on the CPU — one dot product, no matrix work — then run the exact quad
@@ -500,7 +500,7 @@ The re-arrangements moved to the GPU. Positions and orientations are uploaded **
 change** as from/to instanced attributes, and a single uniform drives the transition; the shader
 lerps position and *nlerps* the quaternion per instance. That buys the staggering: each tile also
 carries a delay derived from **how far it has to travel**, so the furthest leave first and a layout
-resolves as a wave passing through the wall rather than 2,908 tiles switching in lockstep.
+resolves as a wave passing through the wall rather than 2,936 tiles switching in lockstep.
 
 ![Mid-morph](web/docs/stagger.png)
 
@@ -584,7 +584,7 @@ record 1238. Silently, with nothing to suggest the wrong thing had happened.
 
 The fix is to stop consulting the hover. A tap now resolves what is under the point that was
 *released* and selects that, so the hover path exists only for a mouse. It is also skipped
-entirely on a coarse pointer, which means a one-finger orbit no longer runs the 2,908-tile broad
+entirely on a coarse pointer, which means a one-finger orbit no longer runs the 2,936-tile broad
 phase every frame for a highlight nobody can see.
 
 The rest of what the pass turned up, all of it measured rather than eyeballed:
@@ -598,7 +598,7 @@ The rest of what the pass turned up, all of it measured rather than eyeballed:
 | the detail cache was **disabled below 820px** — so a phone, on the 32px atlas tier, had nothing sharper to show when you pinched in | enabled with a smaller budget: 1024², 16 cells, 4 MB against the desktop's 16 |
 | the panel was a full-screen takeover with one 26px exit | swipe it away, or press Back — one history entry per panel, not one per record |
 | a tap *inside* the panel raycast straight through it and could select the tile behind | the window handlers act only on the canvas |
-| physics built all **2,908 rigid bodies** on a phone, exactly as on desktop | the nearest 1,200; the rest recede to the same shell a filtered-out record goes to |
+| physics built all **2,936 rigid bodies** on a phone, exactly as on desktop | the nearest 1,200; the rest recede to the same shell a filtered-out record goes to |
 
 One more thing the pass turned up, which is not a bug so much as an assumption: the arrangements
 packed to a fixed landscape ratio — the grid to 1.9:1, the model blocks to 16:9 — so a phone held
@@ -628,7 +628,7 @@ count, because contact pairs do — on this workload, stepping the same scene:
 1,200 costs 0.31× of the full set where a linear model predicts 0.46×, and still reads as a big
 pile. These are container numbers on a software rasteriser, so treat the **ratio** as the finding
 and not the milliseconds. The sweep was run when the corpus was 2,619 records and is quoted as
-measured; it has not been re-run at 2,908, and the shape of the curve is what the cap is drawn
+measured; it has not been re-run at 2,936, and the shape of the curve is what the cap is drawn
 from.
 
 Verified under Chrome device emulation with real touch, at 375×667, 390×844, 412×915, 744×1133 and
@@ -670,6 +670,9 @@ python3 tools/clean.py                          # dedupe + categorise -> dataset
 # --- the prompts SSR does not carry (section 3) ---
 python3 tools/api_feeds.py                      # community feeds + prompt bank -> api_feeds.json
 python3 tools/merge_api_feeds.py                # fold them into dataset.json
+
+# --- after an extractor fix: merge what it recovered, and nothing else ---
+python3 tools/merge_recovered.py --before dataset_before.json --after dataset.json
 
 # --- rebuild the deliverables from dataset.json ---
 cp data/higgsfield_prompt_dataset.json dataset.json   # or use the one clean.py just wrote
@@ -795,28 +798,39 @@ Stated plainly rather than papered over:
    row above — a listing page and its example pages describe the same generation, and the pipeline
    dedupes across them, so one record between them is correct behaviour, not a loss.
 
-   The residual gap is 22 prompts on two pages: 20 sample prompts on `/soul`, and 2 fragments on one
-   motion example page. The cause is identified — `flat_prompts.py` skips any `prompt:"…"` whose
-   enclosing object opens immediately before it, which was meant to skip the nested
-   `prompt:{prompt:"…"}` job shape but also skips `params:{prompt:"…"}`. Widening it changes
-   attribution across the whole corpus, so it is left as a measured, reproducible gap
-   (0.7% of the prompts) rather than a change smuggled in with a rebuild.
+   That gap has since been closed, and closing it corrected the figure. `flat_prompts.py` skipped
+   any `prompt:"…"` whose enclosing object opened immediately before it — meant to skip the nested
+   `prompt:{prompt:"…"}` job shape that `jobs.py` owns, but it also threw away `params:{prompt:"…"}`,
+   a different shape holding real prompts that no other extractor reads. The test now matches the
+   enclosing key rather than the brace.
+
+   Re-running the pipeline over the same 5,121 pages with that one change: **2,753 records before,
+   2,781 after — 28 prompts gained, none lost**, and every other tool-type count identical. The 28
+   are in the corpus (`tools/merge_recovered.py` merges the difference between the two runs, so the
+   fix is all that can ride in). 20 came from `/soul`, 8 from `/higgsfield-genjutsu-presets`.
+
+   The 8 are why the count moved from 22 to 28: **the first audit only examined pages that produced
+   no record at all**, and `/higgsfield-genjutsu-presets` produced one while withholding eight more.
+   Auditing only barren pages understates the gap, so `audit_barren.py` now checks productive pages
+   too and reports them as `produced_but_incomplete`. Re-run after the fix, that count is **zero**,
+   and one barren page remains — holding two copies of the 31-character fragment "background
+   seamlessly disappear", which is not a prompt.
 
    `pages/` is still not committed — 5,121 pages are 2.7 GB, which does not belong in git — but it
    no longer needs to be: `data/known4.txt` holds the full 5,124-URL set, the crawl is one command,
    and `audit_barren.py` re-derives this table from it.
 
-8. **Several columns are too sparse to filter on.** Coverage across the 3,036 records:
-   `visual_subject` 89.6% · `prompt_text` 82.3% · `model_or_effect` 79.6% · `generation_style`
-   60.9% · `recreate_model` 45.3% · `aspect_ratio` 14.7% · `description` 11.6% · `quality` 8.8%
-   (`1080p` on 248 records, `high` on 18) · `lesson_title` 4.6% · `duration_sec` 4.1% ·
-   `preset_name` 3.5% · **`category` 1.5%** · **`badges` 0.4%**. The last two are present in the
+8. **Several columns are too sparse to filter on.** Coverage across the 3,064 records:
+   `visual_subject` 89.7% · `prompt_text` 82.4% · `model_or_effect` 79.5% · `generation_style`
+   61.2% · `recreate_model` 44.9% · `aspect_ratio` 14.6% · `description` 11.5% · `quality` 8.7%
+   (`1080p` on 248 records, `high` on 18) · `lesson_title` 4.6% · `duration_sec` 4.0% ·
+   `preset_name` 3.4% · **`category` 1.5%** · **`badges` 0.4%**. The last two are present in the
    schema but carry almost no data; treat them as incidental rather than as dimensions you can
    slice by.
 
 9. **125 records have no asset at all** — chiefly article prompts with no nearby image. A further
    three have a full-resolution URL but no committed thumbnail, so the gallery, which is driven by
-   thumbnails, shows 2,908 of the 2,911 paired records. Those three are **not** a flaky build:
+   thumbnails, shows 2,936 of the 2,939 paired records. Those three are **not** a flaky build:
    re-probed on 2026-09-05, all three videos answer `403 AccessDenied` from CloudFront, as do all
    six poster candidates for each — the objects have been withdrawn at the origin. The same holds
    for all 19 un-thumbed entries in `assets/manifest.json` (3 primary, 16 extra samples): every one

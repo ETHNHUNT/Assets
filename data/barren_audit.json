@@ -1,11 +1,11 @@
 {
- "dataset": "dataset.json",
+ "dataset": "/tmp/claude-0/-home-user-Assets/32727e8d-630b-5b12-b486-b8ba5e9160d4/scratchpad/dataset_after_fix.json",
  "counts": {
-  "produced_a_record": 2008,
+  "produced_a_record": 2009,
   "payload_no_prompt": 2071,
   "captured_elsewhere": 1025,
   "no_payload": 15,
-  "uncaptured": 2
+  "uncaptured": 1
  },
  "pages": [
   {
@@ -9010,19 +9010,6 @@
    "bytes": 128883,
    "uncaptured_count": 0,
    "uncaptured_examples": []
-  },
-  {
-   "url": "https://higgsfield.ai/soul",
-   "file": "pages/6ee4850364a05296c679404ead483eb1ab34476a.html",
-   "bucket": "uncaptured",
-   "prompt_field_hits": 20,
-   "bytes": 316453,
-   "uncaptured_count": 20,
-   "uncaptured_examples": [
-    "A close-up upper-body shot of a young woman caught mid-movement, on her teeth shining minimalistic, reflective metallic grills only on the upper right canine and lateral incisor, or alternatively on the lower left two premolars, with an open-frame design such as letters, stars, or abstract shapes. T",
-    "Wide shot taken from about 10 meters away showing a stylish Latina man sitting on sun-warmed, smooth whitewashed stones at the edge of the crystalline Mediterranean sea. He wears tailored swim shorts in a striking dusty lavender with a subtle abstract wavy stripe motif in muted coral and pale peach,",
-    "A spontaneously captured iPhone-styled candid photo of a young woman with platinum hair casually lounging against a textured, slightly weathered Parisian stone wall on a city sidewalk. She wears understated effortless cool conveyed through an ivory silk blouse from COS with soft draping and subtle f"
-   ]
   },
   {
    "url": "https://higgsfield.ai/apps/social-media-icon",
