@@ -1,0 +1,30 @@
+name: verify
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install build dependencies
+        run: pip install -r requirements.txt
+
+      - name: Compile every tool
+        run: python -m compileall -q tools
+
+      # Runs against the committed copies in data/ — no crawl, no network. Checks whose
+      # inputs are not in the repo (the academy re-extraction, which needs pages/) report
+      # SKIP; anything that actually fails exits non-zero and fails the job.
+      - name: End-to-end checks
+        run: python tools/verify.py

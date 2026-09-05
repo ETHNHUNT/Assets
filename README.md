@@ -273,12 +273,12 @@ headers. Empty means "not established", never "zero" — nothing is guessed to f
 | Tool Type | `tool_type` | Which Higgsfield surface the record came from — see the table in section 4 |
 | Generation Style | `generation_style` | Multi-label, `; `-joined — `Cinematic / Film`, `Noir / Moody`, … |
 | Visual Subject | `visual_subject` | Multi-label, `; `-joined — `People / Portrait`, `Landscape / Nature`, … |
-| Category | `category` | The site's own category label where the page carries one |
+| Category | `category` | The site's own category label where the page carries one. **Populated on 24 records (0.9%)** — present for completeness, not a dimension you can slice by |
 | Preset | `preset_name` | The preset a job record was generated with |
 | Aspect Ratio | `aspect_ratio` | As declared by the job record (`16:9`, `9:16`) |
 | Duration (s) | `duration_sec` | Declared clip length for video jobs |
 | Quality | `quality` | The job's quality tier where declared |
-| Badges | `badges` | Platform or tier badges shown on the source page |
+| Badges | `badges` | Platform or tier badges shown on the source page. **Populated on 12 records (0.4%)** — as with `category`, incidental rather than filterable |
 | Word Count | `word_count` | Words in `prompt_text` — 4 to 3,282, median 99 |
 | Char Count | `char_count` | Characters in `prompt_text` |
 | Asset Count | `asset_count` | Assets paired to this record, including extras. Only the first four reach the gallery |
@@ -635,6 +635,23 @@ python3 tools/verify.py                               # end-to-end checks
 python3 tools/build_readme.py                         # -> data/README_stats.md
 ```
 
+`verify.py` also runs **straight from a clone**, with no build first: when `dataset.json` and
+`deliverables/` are absent it falls back to the committed copies in `data/`. Checks whose inputs
+genuinely are not there — the academy re-extraction, which needs the uncommitted `pages/` — report
+`SKIP`, never `PASS`; a check that ran over nothing has established nothing. It exits non-zero on
+any real failure, which is what CI runs on every push.
+
+One more probe, for when a rebuild leaves assets un-thumbed:
+
+```bash
+python3 tools/recheck_thumbs.py            # are the un-thumbed assets still served?
+python3 tools/recheck_thumbs.py --posters  # ...and their poster candidates too
+```
+
+It re-fetches every asset in `assets/manifest.json` that carries no `thumb_path` and reports
+whether the origin still serves it — the difference between a transient build failure worth
+retrying and an asset that has been withdrawn. See limitation 9.
+
 `build_readme.py` recomputes every count, table and percentage in this file and writes them to
 `data/README_stats.md`. It does **not** rewrite `README.md`: the column reference, the join guide,
 these build steps and section 8's limitations are hand-written and a generator cannot reproduce
@@ -705,8 +722,19 @@ Stated plainly rather than papered over:
    no data; treat them as incidental rather than as dimensions you can slice by.
 
 9. **125 records have no asset at all** — chiefly article prompts with no nearby image. A further
-   three have a full-resolution URL but no committed thumbnail (the fetch failed at build time), so
-   the gallery, which is driven by thumbnails, shows 2,619 of the 2,622 paired records.
+   three have a full-resolution URL but no committed thumbnail, so the gallery, which is driven by
+   thumbnails, shows 2,619 of the 2,622 paired records. Those three are **not** a flaky build:
+   re-probed on 2026-09-05, all three videos answer `403 AccessDenied` from CloudFront, as do all
+   six poster candidates for each — the objects have been withdrawn at the origin. The same holds
+   for all 19 un-thumbed entries in `assets/manifest.json` (3 primary, 16 extra samples): every one
+   is 403 or 404 today. `python3 tools/recheck_thumbs.py` re-runs that probe and says whether any
+   have come back; nothing in a rebuild can recover them while they are gone.
+
+   Probing this CDN has a trap worth knowing. It answers **HEAD and `Range` requests with 403 even
+   for assets it serves fine over a plain GET**, and it 403s the browser User-Agent `assets.py`
+   sends — so a cheap liveness check reports every asset as dead. `recheck_thumbs.py` uses a plain
+   GET under curl's own UA for exactly this reason. Thumbnail building is unaffected: it goes
+   through the `images.higgs.ai` resizer, which still works.
 
 ---
 
