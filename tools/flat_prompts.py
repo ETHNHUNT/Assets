@@ -93,9 +93,13 @@ def extract_flat(h, url):
     out = []
     for m in FLAT.finditer(p):
         qs = m.end() - 1
-        # skip the nested value-object form, already covered by jobs.py
-        before = p[max(0, m.start() - 12):m.start()]
-        if re.search(r'(?:\$R\[\d+\]=)?\{\s*$', before):
+        # Skip the nested value-object form `prompt:{prompt:"…"}`, which jobs.py owns.
+        # The test used to be "does an object open immediately before this?", which also
+        # threw away `params:{prompt:"…"}` — a different shape that no other extractor
+        # reads, and the reason /soul's 20 sample prompts went uncaptured. Match the
+        # enclosing key, not just the brace.
+        before = p[max(0, m.start() - 40):m.start()]
+        if re.search(r'(?<![A-Za-z0-9_$])prompt\s*:\s*(?:\$R\[\d+\]=)?\{\s*$', before):
             continue
         text, endq = read_string_at(p, qs)
         if not text or len(text.strip()) < 20:
