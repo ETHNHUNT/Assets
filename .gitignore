@@ -3,3 +3,18 @@ pdfthumbs/
 thumbs.index.json
 __pycache__/
 data/README_stats.md
+
+# Crawl / build intermediates (README section 8). Anchored to the repository root:
+# the scripts write them into the working directory, and `known4.txt` unanchored
+# would also match the committed data/known4.txt.
+/pages/
+/probe/
+/deliverables/
+/robots.txt
+/known4.txt
+/discovered.txt
+/raw_rows.jsonl
+/dataset.json
+/api_feeds.json
+/barren_audit.json
+/*.log
