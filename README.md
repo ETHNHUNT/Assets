@@ -13,7 +13,7 @@ Excel/CSV dataset, a browsable HTML gallery, and a print-ready PDF.
 | — presets / motion effects | 538 |
 | **Records with a paired asset** | 2,622 (95.4%) — 2,619 of them with a committed thumbnail |
 | **Assets catalogued** | 4,953 |
-| **Thumbnails committed** | 5,144 WebP (110 MB) |
+| **Thumbnails committed** | 5,144 WebP (99 MB) |
 | **Prompt text captured** | ~2.29M characters |
 | **Prompt length** | 4–3,282 words (median 99) |
 | **Crawl date** | 2026-09-04 |
@@ -28,13 +28,23 @@ motion effect, the source page URL — and **the asset it produced**. Open
 spreadsheet by model, style, or subject.
 
 Thumbnails (512px WebP) are committed so the gallery and PDF work straight from a clone. The
-full-resolution originals — roughly 8 GB of PNG and MP4 — are **not** in the repo; fetch them with:
+full-resolution originals are **not** in the repo — that is 3,686 distinct files (the 4,953
+catalogued assets include reuse of the same URL across records), and **roughly 20–30 GB** of PNG
+and MP4. Videos dominate it and their sizes are long-tailed, so measure before you commit to a
+pull rather than trusting a single figure:
 
 ```bash
+python3 tools/download_assets.py --estimate      # size the selection first, download nothing
+python3 tools/download_assets.py --limit 5       # smoke test
 python3 tools/download_assets.py                 # everything
-python3 tools/download_assets.py --images-only   # stills only
+python3 tools/download_assets.py --images-only   # stills only (~0.8 GB)
 python3 tools/download_assets.py --tool "Viral Preset"
 ```
+
+`--estimate` samples the selection with HEAD requests and reports a projected total per asset
+type. It accepts the same filters as a real run, so it prices exactly what you are about to fetch.
+Downloads are resumable and files are named `<record_id>__<index>_<original>`, so they join back
+to the dataset.
 
 ---
 
@@ -244,6 +254,50 @@ Patterns that recur across the high-fidelity records:
 | `assets/manifest.csv` / `.json` | CSV/JSON | Every asset: record, role, type, full-res URL, poster, thumbnail path |
 | `assets/thumbs/*.webp` | WebP | 5,144 thumbnails (99 MB) |
 
+### Column reference
+
+The CSV headers, their JSON/manifest keys, and what each actually holds. Excel uses the same
+headers. Empty means "not established", never "zero" — nothing is guessed to fill a gap.
+
+| Column (CSV / Excel) | JSON key | What it holds |
+|---|---|---|
+| Record ID | `record_id` | SHA-1 of prompt + name + source URL, truncated to 16 hex. The join key, and the thumbnail filename stem |
+| Record Type | `record_type` | `Prompt` (2,209) or `Preset / Effect` (538) |
+| Name | `name` | Preset or effect name; for article and lesson prompts, the heading it sat under |
+| Prompt Text | `prompt_text` | The prompt verbatim, line breaks preserved. Empty for presets that publish no prompt |
+| Description | `description` | What the preset or effect produces, in the site's words. Nulled where the site serves boilerplate |
+| Model / Motion Effect | `model_or_effect` | Generation model (`Wan 2.5`, `Sora 2`) or named motion effect. Empty for the 598 model-agnostic records |
+| Tool Type | `tool_type` | Which Higgsfield surface the record came from — see the table in section 4 |
+| Generation Style | `generation_style` | Multi-label, `; `-joined — `Cinematic / Film`, `Noir / Moody`, … |
+| Visual Subject | `visual_subject` | Multi-label, `; `-joined — `People / Portrait`, `Landscape / Nature`, … |
+| Category | `category` | The site's own category label where the page carries one |
+| Preset | `preset_name` | The preset a job record was generated with |
+| Aspect Ratio | `aspect_ratio` | As declared by the job record (`16:9`, `9:16`) |
+| Duration (s) | `duration_sec` | Declared clip length for video jobs |
+| Quality | `quality` | The job's quality tier where declared |
+| Badges | `badges` | Platform or tier badges shown on the source page |
+| Word Count | `word_count` | Words in `prompt_text` — 4 to 3,282, median 99 |
+| Char Count | `char_count` | Characters in `prompt_text` |
+| Asset Count | `asset_count` | Assets paired to this record, including extras. Only the first four reach the gallery |
+| Asset Type | `asset_type` | `video` (2,246) or `image` (376) for the record's primary asset |
+| Thumbnail (repo path) | `thumb_path` | Committed 512px WebP, relative to `assets/` |
+| Full-Res Asset URL | `full_res_url` | The original on Higgsfield's CDN. Not committed — `download_assets.py` fetches these |
+| Poster URL | `poster_url` | Still frame for a video asset |
+| Asset Pairing | `media_pairing` | **How** the asset was matched — see the pairing table above. Empty means the asset came from the record's own `media:` block, with no inference |
+| Recreate Model | `recreate_model` | Model named by a "Recreate" link, where the record came from one |
+| Lesson | `lesson_title` | Academy lesson the prompt's shot appears in |
+| Lesson Timestamp (s) | `timestamp_in_lesson` | Offset of that shot within the lesson video |
+| Confidence | `confidence` | `High` (2,664) / `Medium` (19) / `Low` (64) — how sure the extractor is this is a real prompt |
+| Site Section | `site_section` | Which part of the site the source page belongs to |
+| Extraction Source | `extraction_source` | Which of the seven extractors produced the record — see section 3 |
+| Sample Media URL | `media_url` | The media URL as it appeared in the payload. Identical to `full_res_url` for 2,612 of 2,622 records; it differs only where the payload pointed at a variant |
+| Source Page URL | `source_url` | The public page the record was read from |
+
+Three fields exist in the JSON but not in the flat exports, because they do not fit one cell:
+`extra_assets` (further samples beyond the primary, populated for 720 records), and `width` /
+`height` of the primary asset. `assets/manifest.csv` carries every asset individually, so use that
+when you want them all.
+
 ### Joining the files
 
 Every record carries a stable **`record_id`** — the first column of each CSV, the first key of each
@@ -295,7 +349,15 @@ python3 tools/build_csv.py                            # -> deliverables/*.csv + 
 python3 tools/build_xlsx.py                           # -> deliverables/*.xlsx
 python3 tools/build_pdf.py                            # -> deliverables/*.pdf
 python3 tools/verify.py                               # end-to-end checks
+
+# --- refresh the figures quoted in this README ---
+python3 tools/build_readme.py                         # -> data/README_stats.md
 ```
+
+`build_readme.py` recomputes every count, table and percentage in this file and writes them to
+`data/README_stats.md`. It does **not** rewrite `README.md`: the column reference, the join guide,
+these build steps and section 8's limitations are hand-written and a generator cannot reproduce
+them. After a re-crawl, diff the digest against this file and copy across what actually moved.
 
 `build_csv.py`, `build_xlsx.py` and `build_pdf.py` write into `deliverables/`; the committed copies
 live in `data/`, so move them across when you are happy with a rebuild. `crawl.py`, `discover.py`,

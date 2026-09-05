@@ -10,10 +10,11 @@ run this to pull them locally.
     python3 download_assets.py --tool "Viral Preset"
     python3 download_assets.py --model "Kling 3.0" --out ./originals
     python3 download_assets.py --limit 5           # smoke test
+    python3 download_assets.py --videos-only --estimate   # how big would that be?
 
 Resumable: files already present with a matching byte count are skipped.
 """
-import os, csv, sys, time, argparse, threading, queue
+import os, csv, sys, time, argparse, threading, queue, collections
 import urllib.request, urllib.error
 from urllib.parse import urlparse
 
@@ -50,6 +51,9 @@ def main():
     ap.add_argument("--model", help="substring match on model_or_effect")
     ap.add_argument("--limit", type=int)
     ap.add_argument("--threads", type=int, default=4)
+    ap.add_argument("--estimate", action="store_true",
+                    help="sample the selection with HEAD requests, report the projected "
+                         "size, and exit without downloading")
     a = ap.parse_args()
 
     if not os.path.exists(a.manifest):
@@ -70,6 +74,32 @@ def main():
             seen.add(r["full_res_url"]); uniq.append(r)
     if a.limit:
         uniq = uniq[:a.limit]
+    if a.estimate:
+        import random, statistics
+        if not uniq:
+            sys.exit("nothing selected")
+        # Sample per asset type: video averages several times an image, so one
+        # flat sample projects badly whenever the mix shifts.
+        rng, total, lines = random.Random(0), 0.0, []
+        for kind in sorted({r["asset_type"] for r in uniq}):
+            pool = [r for r in uniq if r["asset_type"] == kind]
+            sample = rng.sample(pool, min(120, len(pool)))
+            sizes = [n for n in (head_size(r["full_res_url"]) for r in sample) if n]
+            if not sizes:
+                lines.append(f"  {kind:6} {len(pool):5} assets — could not size any sample")
+                continue
+            mean = statistics.mean(sizes)
+            total += len(pool) * mean
+            lines.append(f"  {kind:6} {len(pool):5} assets, sampled {len(sizes):3}: "
+                         f"median {statistics.median(sizes)/1048576:5.2f} MB, "
+                         f"mean {mean/1048576:5.2f} MB -> {len(pool)*mean/1073741824:5.1f} GB")
+        if not total:
+            sys.exit("could not size any sample asset — check network access")
+        print(f"{len(uniq)} unique assets selected")
+        print("\n".join(lines))
+        print(f"projected total ~{total/1073741824:.0f} GB — a sampled estimate, not a promise")
+        return
+
     os.makedirs(a.out, exist_ok=True)
     print(f"{len(uniq)} assets -> {a.out}/")
 

@@ -33,6 +33,11 @@ def esc(t, n=None):
 
 tools = sorted({(c[0].get("tool_type") or "Other") for c in cards})
 models = sorted({(c[0].get("model_or_effect") or "Unspecified") for c in cards})
+# Built from the records themselves. A hard-coded list silently rots: the previous
+# "Exact pairing only" option matched zero of the 2,619 cards.
+PAIR_LABEL = {"": "On the record itself (no inference)"}
+pairings = sorted({(c[0].get("media_pairing") or "") for c in cards})
+kinds = sorted({(c[0].get("asset_type") or "") for c in cards if c[0].get("asset_type")})
 
 out = []
 W = out.append
@@ -78,9 +83,13 @@ button.cp{{background:var(--card);color:var(--mut);border:1px solid var(--line);
 padding:4px 9px;font-size:11px;font-family:inherit;cursor:pointer}}
 button.cp:hover{{border-color:var(--acc);color:var(--ink)}}
 button.cp.ok{{color:#7ee0a8;border-color:#2f6b4a}}
-.rid{{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;color:#5f6880;
-user-select:all}}
+a.rid{{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;color:#5f6880;
+text-decoration:none}}
+a.rid:hover{{color:var(--acc)}}
 .count{{color:var(--mut);font-size:12px;margin:0 0 12px}}
+.empty{{color:var(--mut);font-size:13px;background:var(--card);border:1px solid var(--line);
+border-radius:10px;padding:16px 18px;max-width:640px}}
+.card:target{{border-color:var(--acc);box-shadow:0 0 0 2px rgba(124,140,255,.35)}}
 .hidden{{display:none}}
 </style></head><body>
 <header>
@@ -88,12 +97,18 @@ user-select:all}}
 <div class="sub">Every prompt beside what it generated · {len(cards)} of {len(ds)} records (the rest have no paired asset) ·
 click a thumbnail for the full-resolution original · thumbnails are 512px WebP, run <code>tools/download_assets.py</code> to fetch originals in bulk</div>
 <div class="controls">
-<input type="search" id="q" placeholder="Search prompt text, name, model…">
+<input type="search" id="q" aria-label="Search prompts" placeholder="Search full prompt text, name, model…">
 <select id="tool"><option value="">All tool types</option>{''.join(f'<option>{esc(t)}</option>' for t in tools)}</select>
 <select id="model"><option value="">All models</option>{''.join(f'<option>{esc(m)}</option>' for m in models)}</select>
-<select id="pair"><option value="">Any pairing</option><option value="exact">Exact pairing only</option></select>
+<select id="pair"><option value="__any">Any pairing</option>{''.join(
+   f'<option value="{esc(p)}">{esc(PAIR_LABEL.get(p) or p)}</option>' for p in pairings)}</select>
+<select id="kind"><option value="">Image and video</option>{''.join(
+   f'<option value="{esc(k)}">{esc(k).capitalize()} only</option>' for k in kinds)}</select>
 </div></header><main>
-<p class="count" id="count"></p><div class="grid" id="grid">""")
+<p class="count" id="count"></p>
+<p class="empty hidden" id="empty">No records match these filters. Clearing the search box or
+widening a filter will bring results back.</p>
+<div class="grid" id="grid">""")
 
 def shot_html(s, alt):
     """Thumbnail, linked to the full-resolution original where we have its URL."""
@@ -123,32 +138,52 @@ for r, rid, shots in cards:
         tags.append(f'<span class="t">{len(shots)} samples</span>')
     # presets can carry no prompt and no description — don't offer a no-op button
     copy_btn = ('<button class="cp" type="button">Copy prompt</button>' if txt.strip() else "")
-    hay = esc(((r.get("name") or "") + " " + txt + " " + (r.get("model_or_effect") or "")).lower(), 900)
-    W(f'''<article class="card" data-tool="{esc(r.get("tool_type") or "Other")}"
+    W(f'''<article class="card" id="{rid}" data-tool="{esc(r.get("tool_type") or "Other")}"
  data-model="{esc(r.get("model_or_effect") or "Unspecified")}"
- data-pair="{esc(r.get("media_pairing") or "")}" data-h="{hay}">
+ data-pair="{esc(r.get("media_pairing") or "")}" data-kind="{esc(r.get("asset_type") or "")}"
+ data-n="{esc((r.get("name") or "") + " " + (r.get("model_or_effect") or ""), 160)}">
 <div class="shots">{imgs}</div><div class="body">
 <div class="nm">{esc(r.get("name") or r.get("tool_type") or "Prompt")}</div>
 <div class="pr">{esc_full(txt)}</div>
 <div class="tags">{"".join(tags)}</div>
-<div class="bar">{copy_btn}<span class="rid" title="Join key for manifest.csv and the CSV/Excel/JSON exports">{rid}</span></div>
+<div class="bar">{copy_btn}<a class="rid" href="#{rid}" title="Permalink — also the join key for manifest.csv and the CSV/Excel/JSON exports">{rid}</a></div>
 <a class="src" href="{esc(r.get("source_url"))}" target="_blank" rel="noopener">{esc(r.get("source_url"))}</a>
 </div></article>''')
 
 W("""</div></main><script>
 const q=document.getElementById('q'),tool=document.getElementById('tool'),
 mdl=document.getElementById('model'),pair=document.getElementById('pair'),
-cards=[...document.querySelectorAll('.card')],cnt=document.getElementById('count');
+kind=document.getElementById('kind'),cards=[...document.querySelectorAll('.card')],
+cnt=document.getElementById('count'),empty=document.getElementById('empty');
+
+// Search the whole prompt, not a truncated copy of it. Indexed once at load from
+// the text already on the page, so there is no second copy of 2.29M characters.
+const hay=cards.map(c=>(c.dataset.n+' '+c.querySelector('.pr').textContent).toLowerCase());
+
 function apply(){
- const s=q.value.trim().toLowerCase(),t=tool.value,m=mdl.value,p=pair.value;let n=0;
- for(const c of cards){
-  const ok=(!s||c.dataset.h.includes(s))&&(!t||c.dataset.tool===t)&&
-           (!m||c.dataset.model===m)&&(!p||c.dataset.pair===p);
+ const s=q.value.trim().toLowerCase(),t=tool.value,m=mdl.value,p=pair.value,k=kind.value;let n=0;
+ for(let i=0;i<cards.length;i++){
+  const c=cards[i];
+  const ok=(!s||hay[i].includes(s))&&(!t||c.dataset.tool===t)&&
+           (!m||c.dataset.model===m)&&(p==='__any'||c.dataset.pair===p)&&
+           (!k||c.dataset.kind===k);
   c.classList.toggle('hidden',!ok); if(ok)n++;
  }
  cnt.textContent=n+' of '+cards.length+' records shown';
+ empty.classList.toggle('hidden',n>0);
 }
-[q,tool,mdl,pair].forEach(e=>e.addEventListener('input',apply));apply();
+[q,tool,mdl,pair,kind].forEach(e=>e.addEventListener('input',apply));apply();
+
+// A permalink must survive the filters, so reveal its target before jumping to it.
+function jump(){
+ const id=location.hash.slice(1); if(!id) return;
+ const el=document.getElementById(id); if(!el) return;
+ if(el.classList.contains('hidden')){
+  q.value='';tool.value='';mdl.value='';pair.value='__any';kind.value='';apply();
+ }
+ el.scrollIntoView({block:'center'});
+}
+addEventListener('hashchange',jump); if(location.hash) setTimeout(jump,0);
 
 function copyText(t){
  if(navigator.clipboard&&window.isSecureContext) return navigator.clipboard.writeText(t);
