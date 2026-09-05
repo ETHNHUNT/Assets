@@ -13,11 +13,12 @@
 import * as THREE from 'three/webgpu';
 import {
   attribute, uv, vec2, vec3, vec4, float, texture, mix, smoothstep, step as tslStep,
-  positionLocal,
+  positionLocal, uniform, normalize,
   pass, mrt, output,
 } from 'three/tsl';
 import { bloom } from 'three/addons/tsl/display/BloomNode.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { animate, createSpring } from 'animejs';
 import { AtlasAudio } from './audio.js';
 
 // ---------------------------------------------------------------- boot ------
@@ -29,7 +30,21 @@ let DATA, ATLAS, PER_ROW, N;
 let renderer, scene, camera, controls, mesh, dust;
 let pipeline = null, bloomPass = null, bloomOn = true;
 const audio = new AtlasAudio();
-let aCell, aDim, aFocus, aDetail;        // instanced attributes
+/**
+ * WebGPU's maxVertexBuffers is 8 and three binds one buffer per attribute, so a
+ * shader that references more than eight silently fails to build a pipeline and
+ * the mesh renders black. Per-instance data is therefore packed:
+ *   aMeta   = (atlas cell, dim, focus, detail slot)
+ *   aFromPD = (from-position xyz, stagger delay)
+ *   aToPos  = to-position xyz
+ *   aQuatA / aQuatB = from/to orientation
+ * With position and uv that is seven, and `normal` is deleted since an unlit
+ * material never reads it.
+ */
+let aMeta, aFromPD, aToPos, aQuatA, aQuatB;
+const M_CELL = 0, M_DIM = 1, M_FOCUS = 2, M_DETAIL = 3;
+const uMorph = uniform(1);                  // 0 = at A, 1 = at B; the shader staggers per tile
+const STAGGER = 0.34;                       // fraction of the timeline given over to the wave
 let posCur, posTo, quatCur, quatTo;      // morph buffers
 let morph = 1;                           // 1 = settled
 let active = null;                       // Uint8Array: does record pass filters
@@ -96,12 +111,17 @@ async function boot() {
         if (!DETAIL) return null;
         return { slots: DETAIL_SLOTS, held: slotOwner.reduce((a, v) => a + (v >= 0 ? 1 : 0), 0),
                  filled: detailFilled, inFlight: detailLoads,
-                 bound: Array.from(aDetail.array).filter((v) => v >= 0).length };
+                 bound: Array.from(aMeta.array).filter((v, k) => k % 4 === M_DETAIL && v >= 0).length };
       },
       forceDetail() { detailDue = 0; updateDetailCache(); },
+      pickNow() { return pickInstance(); },
       get morph() { return morph; },
       get detailCanvas() { return detailCtx && detailCtx.canvas; },
       get detailTex() { return DETAIL; },
+      get atlasTex() { return ATLAS; },
+      // instanceMatrix is identity — placement lives in positionNode — so tests
+      // that need where a tile actually is have to read this
+      get positions() { return posCur; },
       get info() { return renderer.info; },
       // headless screenshots cannot capture a WebGPU swapchain, so verification
       // reads the pixels back off the GPU instead
@@ -183,6 +203,7 @@ let detailLoads = 0, detailFilled = 0, detailDue = 0;
 // from onload lets a write land between needsUpdate and the GPU's copy of the
 // canvas, which shows up as a torn cell.
 let detailPending = [];
+const detailFade = new Map();          // record index -> 0..1, only while fading
 
 function buildDetailCache() {
   const canvas = document.createElement('canvas');
@@ -215,7 +236,11 @@ function releaseSlot(slot) {
   if (i < 0) return;
   slotOwner[slot] = -1;
   recordSlot[i] = -1;
-  if (aDetail.array[i] !== -1) { aDetail.array[i] = -1; aDetail.needsUpdate = true; }
+  if (aMeta.array[i * 4 + M_DETAIL] !== -1) {
+    aMeta.array[i * 4 + M_DETAIL] = -1; aMeta.needsUpdate = true;
+    detailFade.delete(i);
+    aToPos.array[i * 4 + 3] = 0; aToPos.needsUpdate = true;
+  }
   detailFree.push(slot);
   detailPending = detailPending.filter((q) => q.slot !== slot);
 }
@@ -250,10 +275,11 @@ function flushDetail() {
     // centre-crop to square, matching how tools/build_web.py packs the atlas
     detailCtx.drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side,
                         sx, sy, DETAIL_CELL, DETAIL_CELL);
-    aDetail.array[i] = slot;
+    aMeta.array[i * 4 + M_DETAIL] = slot;
+    detailFade.set(i, 0);
     detailFilled++; wrote++;
   }
-  if (wrote) { DETAIL.needsUpdate = true; aDetail.needsUpdate = true; }
+  if (wrote) { DETAIL.needsUpdate = true; aMeta.needsUpdate = true; }
 }
 
 /**
@@ -307,17 +333,26 @@ function buildScene() {
 
   // ---- per-instance data -------------------------------------------------
   const geo = new THREE.PlaneGeometry(1, 1);
-  const cell = new Float32Array(N), dim = new Float32Array(N), foc = new Float32Array(N);
-  const det = new Float32Array(N);
-  for (let i = 0; i < N; i++) { cell[i] = DATA.records[i].i; dim[i] = 1; foc[i] = 0; det[i] = -1; }
-  aCell = new THREE.InstancedBufferAttribute(cell, 1);
-  aDim = new THREE.InstancedBufferAttribute(dim, 1);
-  aFocus = new THREE.InstancedBufferAttribute(foc, 1);
-  aDetail = new THREE.InstancedBufferAttribute(det, 1);   // -1 = sample the base atlas
-  geo.setAttribute('aCell', aCell);
-  geo.setAttribute('aDim', aDim);
-  geo.setAttribute('aFocus', aFocus);
-  geo.setAttribute('aDetail', aDetail);
+  geo.deleteAttribute('normal');            // unlit material; frees a vertex buffer
+
+  const meta = new Float32Array(N * 4);
+  for (let i = 0; i < N; i++) {
+    meta[i * 4 + M_CELL] = DATA.records[i].i;
+    meta[i * 4 + M_DIM] = 1;
+    meta[i * 4 + M_FOCUS] = 0;
+    meta[i * 4 + M_DETAIL] = -1;            // -1 = sample the base atlas
+  }
+  aMeta = new THREE.InstancedBufferAttribute(meta, 4);
+  aFromPD = new THREE.InstancedBufferAttribute(new Float32Array(N * 4), 4);
+  aToPos = new THREE.InstancedBufferAttribute(new Float32Array(N * 4), 4);   // xyz + detail fade
+  aQuatA = new THREE.InstancedBufferAttribute(new Float32Array(N * 4), 4);
+  aQuatB = new THREE.InstancedBufferAttribute(new Float32Array(N * 4), 4);
+  for (let i = 0; i < N; i++) { aQuatA.array[i * 4 + 3] = 1; aQuatB.array[i * 4 + 3] = 1; }
+  geo.setAttribute('aMeta', aMeta);
+  geo.setAttribute('aFromPD', aFromPD);
+  geo.setAttribute('aToPos', aToPos);
+  geo.setAttribute('aQuatA', aQuatA);
+  geo.setAttribute('aQuatB', aQuatB);
 
   // must precede tileMaterial(): the material samples DETAIL if it exists
   const lodOff = new URLSearchParams(location.search).get('lod') === 'off';
@@ -325,7 +360,10 @@ function buildScene() {
 
   mesh = new THREE.InstancedMesh(geo, tileMaterial(), N);
   mesh.frustumCulled = false;
-  mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  // placement lives entirely in positionNode now; instanceMatrix stays identity
+  const _id = new THREE.Matrix4();
+  for (let i = 0; i < N; i++) mesh.setMatrixAt(i, _id);
+  mesh.instanceMatrix.needsUpdate = true;
   scene.add(mesh);
 
   posCur = new Float32Array(N * 3); posTo = new Float32Array(N * 3);
@@ -340,8 +378,9 @@ function buildScene() {
 function tileMaterial() {
   const mat = new THREE.MeshBasicNodeMaterial({ side: THREE.DoubleSide });
 
-  const dim = attribute('aDim', 'float');
-  const foc = attribute('aFocus', 'float');
+  const meta = attribute('aMeta', 'vec4');
+  const dim = meta.y, foc = meta.z;
+  const toPD = attribute('aToPos', 'vec4');   // xyz = to-position, w = detail cross-fade
 
   // An integer index reaches the fragment stage as an interpolated float, and
   // fp32 can land it a hair either side of a whole number — floor()/mod() then
@@ -353,7 +392,7 @@ function tileMaterial() {
   const cellLocal = vec2(uv().x, uv().y.oneMinus());
 
   const per = float(PER_ROW);
-  const cell = snap(attribute('aCell', 'float'));
+  const cell = snap(meta.x);
   const auv = vec2(cell.mod(per), cell.div(per).floor()).add(cellLocal).div(per);
 
   let base = texture(ATLAS, auv).rgb;
@@ -362,10 +401,11 @@ function tileMaterial() {
     // Both textures are sampled and mixed rather than branched: a per-instance
     // branch diverges across a wavefront for no saving on two texture reads.
     const dper = float(DETAIL_PER_ROW);
-    const det = attribute('aDetail', 'float');
+    const det = meta.w;
     const dsnap = snap(det);
     const duv = vec2(dsnap.mod(dper), dsnap.div(dper).floor()).add(cellLocal).div(dper);
-    base = mix(base, texture(DETAIL, duv).rgb, tslStep(float(0), det));
+    // cross-fade rather than switch, so sharpening is felt instead of seen
+    base = mix(base, texture(DETAIL, duv).rgb, tslStep(float(0), det).mul(toPD.w));
   }
   const lum = base.r.mul(0.299).add(base.g.mul(0.587)).add(base.b.mul(0.114));
   const ghost = vec3(lum.mul(0.30), lum.mul(0.33), lum.mul(0.46));   // cold, receded
@@ -388,7 +428,23 @@ function tileMaterial() {
 
   // filtered-out tiles shrink back; the hovered one lifts toward the viewer
   const s = float(1).add(foc.mul(0.30)).mul(mix(float(0.40), float(1.0), dim));
-  mat.positionNode = positionLocal.mul(vec3(s, s, float(1)));
+
+  // Per-instance local time: each tile starts at its own delay and still lands
+  // on 1, so the arrangement resolves as a wave instead of a switch.
+  const fromPD = attribute('aFromPD', 'vec4');
+  const delay = fromPD.w;
+  const span = float(1).sub(delay).max(float(0.001));
+  const tl = uMorph.sub(delay).div(span).clamp(0, 1);
+  const e = tl.mul(tl).mul(float(3).sub(tl.mul(2)));      // smoothstep: settles, no overshoot
+
+  const pos = mix(fromPD.xyz, toPD.xyz, e);
+  // nlerp rather than slerp — indistinguishable at these angles and far cheaper
+  const q = normalize(mix(attribute('aQuatA', 'vec4'), attribute('aQuatB', 'vec4'), e));
+
+  // rotate the scaled quad by q:  v + 2*w*(qv x v) + 2*(qv x (qv x v))
+  const v = positionLocal.mul(vec3(s, s, float(1)));
+  const t2 = q.xyz.cross(v).mul(2);
+  mat.positionNode = v.add(t2.mul(q.w)).add(q.xyz.cross(t2)).add(pos);
   return mat;
 }
 
@@ -688,45 +744,116 @@ function layout(next, instant) {
 
   buildLabels();
   if (!instant) audio.morph();
-  morph = instant ? 1 : 0;
-  if (instant) { posCur.set(posTo); quatCur.set(quatTo); writeMatrices(); }
+  if (instant) {
+    if (morphAnim) { morphAnim.pause(); morphAnim = null; }
+    posCur.set(posTo); quatCur.set(quatTo);
+    morph = 1; uploadMorph(false); uMorph.value = 1;
+  } else {
+    morphDuration = pickDuration();
+    uploadMorph(!REDUCED);
+    startMorph();
+  }
 }
 
+/**
+ * Hand the shader a from-state, a to-state and a per-tile delay. Called once per
+ * re-arrangement; the interpolation itself then costs the CPU nothing.
+ * Tiles that travel furthest are given the smallest delay, so the arrangement
+ * empties from its edges and settles inward.
+ */
+function uploadMorph(stagger = true) {
+  let maxD = 0;
+  for (let i = 0; i < N; i++) {
+    const a = i * 3;
+    const dx = posTo[a] - posCur[a], dy = posTo[a + 1] - posCur[a + 1], dz = posTo[a + 2] - posCur[a + 2];
+    const d = dx * dx + dy * dy + dz * dz;
+    if (d > maxD) maxD = d;
+  }
+  maxD = Math.sqrt(maxD) || 1;
+
+  for (let i = 0; i < N; i++) {
+    const a = i * 3, b = i * 4;
+    aFromPD.array[b] = posCur[a]; aFromPD.array[b + 1] = posCur[a + 1]; aFromPD.array[b + 2] = posCur[a + 2];
+    aToPos.array[b] = posTo[a]; aToPos.array[b + 1] = posTo[a + 1]; aToPos.array[b + 2] = posTo[a + 2];
+    for (let k = 0; k < 4; k++) { aQuatA.array[b + k] = quatCur[b + k]; aQuatB.array[b + k] = quatTo[b + k]; }
+    let delay = 0;
+    if (stagger) {
+      const dx = posTo[a] - posCur[a], dy = posTo[a + 1] - posCur[a + 1], dz = posTo[a + 2] - posCur[a + 2];
+      delay = (1 - Math.sqrt(dx * dx + dy * dy + dz * dz) / maxD) * STAGGER;   // furthest leaves first
+    }
+    aFromPD.array[b + 3] = delay;
+  }
+  aFromPD.needsUpdate = aToPos.needsUpdate = true;
+  aQuatA.needsUpdate = aQuatB.needsUpdate = true;
+}
+
+/** Physics owns the positions while it runs: push them straight to the B slot. */
 function writeMatrices() {
   for (let i = 0; i < N; i++) {
-    _p.set(posCur[i * 3], posCur[i * 3 + 1], posCur[i * 3 + 2]);
-    _q.set(quatCur[i * 4], quatCur[i * 4 + 1], quatCur[i * 4 + 2], quatCur[i * 4 + 3]);
-    mesh.setMatrixAt(i, _m.compose(_p, _q, _s));
-  }
-  mesh.instanceMatrix.needsUpdate = true;
-}
-
-const easeInOut = (t) => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-
-function advanceMorph(dt) {
-  if (morph >= 1) return false;
-  morph = Math.min(1, morph + dt / 0.95);
-  const e = easeInOut(morph);
-  for (let i = 0; i < N; i++) {
     const a = i * 3, b = i * 4;
-    _pa.set(posCur[a], posCur[a + 1], posCur[a + 2]);
-    _pb.set(posTo[a], posTo[a + 1], posTo[a + 2]);
-    _pa.lerp(_pb, e);
-    _qa.set(quatCur[b], quatCur[b + 1], quatCur[b + 2], quatCur[b + 3]);
-    _qb.set(quatTo[b], quatTo[b + 1], quatTo[b + 2], quatTo[b + 3]);
-    _qa.slerp(_qb, e);
-    mesh.setMatrixAt(i, _m.compose(_pa, _qa, _s));
+    aFromPD.array[b] = aToPos.array[b] = posCur[a];
+    aFromPD.array[b + 1] = aToPos.array[b + 1] = posCur[a + 1];
+    aFromPD.array[b + 2] = aToPos.array[b + 2] = posCur[a + 2];
+    aFromPD.array[b + 3] = 0;
+    for (let k = 0; k < 4; k++) aQuatA.array[b + k] = aQuatB.array[b + k] = quatCur[b + k];
   }
-  mesh.instanceMatrix.needsUpdate = true;
-  if (morph >= 1) { posCur.set(posTo); quatCur.set(quatTo); }
-  return true;
+  aFromPD.needsUpdate = aToPos.needsUpdate = true;
+  aQuatA.needsUpdate = aQuatB.needsUpdate = true;
+  uMorph.value = 1;
 }
 
-/** Freeze the in-flight interpolation into posCur/quatCur. */
+const REDUCED = matchMedia('(prefers-reduced-motion: reduce)').matches;
+let morphDuration = 1.1;
+
+/** A short hop and a full re-arrangement should not take the same time. */
+function pickDuration() {
+  if (REDUCED) return 0.001;
+  let sum = 0, n = 0;
+  for (let i = 0; i < N; i += 7) {            // sampled: exact is not worth 2,619 sqrts
+    if (!active[i]) continue;
+    const a = i * 3;
+    const dx = posTo[a] - posCur[a], dy = posTo[a + 1] - posCur[a + 1], dz = posTo[a + 2] - posCur[a + 2];
+    sum += Math.sqrt(dx * dx + dy * dy + dz * dz); n++;
+  }
+  const mean = n ? sum / n : 0;
+  return Math.min(1.8, Math.max(0.9, 0.75 + mean * 0.012));
+}
+
+let morphAnim = null;
+
+/**
+ * The master clock stays linear and the shader eases each tile inside its own
+ * stagger window — easing here as well would compress the wave and read sluggish.
+ */
+function startMorph() {
+  if (morphAnim) morphAnim.pause();
+  const box = { t: 0 };
+  morph = 0; uMorph.value = 0;
+  morphAnim = animate(box, {
+    t: 1,
+    duration: morphDuration * 1000,
+    ease: 'linear',
+    onUpdate: () => { morph = box.t; uMorph.value = morph; },
+    onComplete: () => {
+      morph = 1; uMorph.value = 1;
+      posCur.set(posTo); quatCur.set(quatTo);
+      morphAnim = null;
+    },
+  });
+}
+
+/**
+ * Freeze the in-flight interpolation into posCur/quatCur, matching the shader
+ * exactly — same per-instance delay, same easing — so a layout change mid-flight
+ * starts from where the tiles are actually drawn rather than jumping.
+ */
 function bakeCurrent() {
-  const e = easeInOut(morph);
+  if (morphAnim) { morphAnim.pause(); morphAnim = null; }
   for (let i = 0; i < N; i++) {
     const a = i * 3, b = i * 4;
+    const d = aFromPD.array[i * 4 + 3];
+    const tl = Math.min(1, Math.max(0, (morph - d) / Math.max(1 - d, 0.001)));
+    const e = tl * tl * (3 - 2 * tl);
     _pa.set(posCur[a], posCur[a + 1], posCur[a + 2]);
     _pb.set(posTo[a], posTo[a + 1], posTo[a + 2]);
     _pa.lerp(_pb, e);
@@ -825,13 +952,11 @@ function stepPhysics() {
   }
   for (const [i, rb] of bodies) {
     const t = rb.translation(), r = rb.rotation();
-    _p.set(t.x, t.y, t.z); _q.set(r.x, r.y, r.z, r.w);
-    mesh.setMatrixAt(i, _m.compose(_p, _q, _s));
     const a = i * 3, b = i * 4;
     posCur[a] = t.x; posCur[a + 1] = t.y; posCur[a + 2] = t.z;
     quatCur[b] = r.x; quatCur[b + 1] = r.y; quatCur[b + 2] = r.z; quatCur[b + 3] = r.w;
   }
-  mesh.instanceMatrix.needsUpdate = true;
+  writeMatrices();
 }
 
 /** Radial shove — the pile is meant to be disturbed. */
@@ -876,14 +1001,69 @@ addEventListener('pointerup', (e) => {
   }
 });
 
+/** Visual half-extent of a tile, matching the scale the shader applies. */
+function tileHalf(i) {
+  return 0.5 * (1 + focusNow[i] * 0.30) * (0.40 + 0.60 * dimNow[i]);
+}
+
+const _ro = new THREE.Vector3(), _rd = new THREE.Vector3();
+const _inv = new THREE.Matrix4(), _lo = new THREE.Vector3(), _ld = new THREE.Vector3();
+const _cand = [];
+
+/**
+ * three's InstancedMesh.raycast intersects all 2,619 instances — 9.3 ms per
+ * pointer move, over half a 60 fps frame, spent exactly while the user is
+ * interacting. A BVH does not help: the geometry is one quad, so the cost is
+ * the instance loop. Reject on perpendicular distance from the ray first (a
+ * dot product per tile, no matrix work), then intersect only the survivors.
+ */
+function pickInstance() {
+  ray.setFromCamera(ptr, camera);
+  _ro.copy(ray.ray.origin); _rd.copy(ray.ray.direction);
+  _cand.length = 0;
+
+  const MAX_PERP2 = 0.92 * 0.92;         // half-diagonal of a focused tile, squared
+  for (let i = 0; i < N; i++) {
+    if (!active[i]) continue;
+    const a = i * 3;
+    const dx = posCur[a] - _ro.x, dy = posCur[a + 1] - _ro.y, dz = posCur[a + 2] - _ro.z;
+    const t = dx * _rd.x + dy * _rd.y + dz * _rd.z;
+    if (t <= 0) continue;                                     // behind the camera
+    if (dx * dx + dy * dy + dz * dz - t * t > MAX_PERP2) continue;
+    _cand.push(i, t);
+  }
+  if (!_cand.length) return -1;
+
+  // nearest first, so the first exact hit wins
+  const order = [];
+  for (let k = 0; k < _cand.length; k += 2) order.push(k);
+  order.sort((p, q) => _cand[p + 1] - _cand[q + 1]);
+
+  for (const k of order) {
+    const i = _cand[k];
+    _p.set(posCur[i * 3], posCur[i * 3 + 1], posCur[i * 3 + 2]);
+    _q.set(quatCur[i * 4], quatCur[i * 4 + 1], quatCur[i * 4 + 2], quatCur[i * 4 + 3]);
+    _inv.copy(_m.compose(_p, _q, _s)).invert();
+    _lo.copy(_ro).applyMatrix4(_inv);
+    _ld.copy(_rd).transformDirection(_inv);
+    if (Math.abs(_ld.z) < 1e-6) continue;                     // ray parallel to the quad
+    const t = -_lo.z / _ld.z;
+    if (t < 0) continue;
+    const h = tileHalf(i);
+    if (Math.abs(_lo.x + _ld.x * t) <= h && Math.abs(_lo.y + _ld.y * t) <= h) return i;
+  }
+  return -1;
+}
+
 function pick() {
   if (!pointerMoved) return;
   pointerMoved = false;
-  ray.setFromCamera(ptr, camera);
-  const hit = ray.intersectObject(mesh, false)[0];
-  const id = hit && active[hit.instanceId] ? hit.instanceId : -1;
+  // mid-morph the CPU copy of the positions is the start of the flight, not
+  // where the tiles are drawn, so a hover then lands on the wrong tile
+  const id = morph < 1 ? -1 : pickInstance();
   if (id === hovered) return;
   hovered = id;
+  easeSettled = false;
   const tip = $('#tip');
   if (id < 0) { tip.classList.remove('on'); document.body.style.cursor = ''; return; }
   const r = DATA.records[id];
@@ -901,6 +1081,7 @@ const esc = (t) => String(t == null ? '' : t).replace(/[&<>"]/g,
 function selectIndex(i) {
   selected = i;
   audio.select();
+  easeSettled = false;
   const r = DATA.records[i];
   $('#dname').textContent = r.n || r.t || 'Prompt';
   $('#dimg').src = `../assets/${r.th}`;
@@ -971,16 +1152,34 @@ function frameCamera(preferDir) {
     const shift = right.multiplyScalar(dist * 0.16);
     toP.add(shift); toT.add(shift);
   }
-  fly = { t: 0, fromT: controls.target.clone(), toT, fromP: camera.position.clone(), toP };
+  setFly(controls.target.clone(), toT, camera.position.clone(), toP);
 }
 
-let fly = null, physFrameTimer = 0;
+let fly = null, flyAnim = null, physFrameTimer = 0;
+
+/** Weighted camera move: a spring settles instead of stopping dead. */
+function setFly(fromT, toT, fromP, toP) {
+  if (flyAnim) flyAnim.pause();
+  const fromDir = fromP.clone().sub(fromT);
+  const toDir = toP.clone().sub(toT);
+  const fromR = fromDir.length() || 0.001, toR = toDir.length() || 0.001;
+  fromDir.divideScalar(fromR); toDir.divideScalar(toR);
+  const box = { t: 0 };
+  fly = { box, fromT, toT, fromDir, fromR, toR,
+          turn: new THREE.Quaternion().setFromUnitVectors(fromDir, toDir) };
+  flyAnim = animate(box, {
+    t: 1,
+    duration: REDUCED ? 1 : 1000,
+    ease: REDUCED ? 'linear' : createSpring({ stiffness: 92, damping: 19, mass: 1.1 }),
+    onComplete: () => { fly = null; flyAnim = null; },
+  });
+}
 function flyTo(i) {
   const a = i * 3;
   const target = new THREE.Vector3(posCur[a], posCur[a + 1], posCur[a + 2]);
   const dir = camera.position.clone().sub(controls.target).normalize();
-  fly = { t: 0, fromT: controls.target.clone(), toT: target,
-          fromP: camera.position.clone(), toP: target.clone().add(dir.multiplyScalar(9)) };
+  setFly(controls.target.clone(), target,
+         camera.position.clone(), target.clone().add(dir.multiplyScalar(9)));
 }
 
 function closeDetail() {
@@ -1080,6 +1279,8 @@ function applyFilters() {
     for (let i = 0; i < N; i++) if (!active[i] && recordSlot[i] >= 0) releaseSlot(recordSlot[i]);
     detailDue = 0;
   }
+  stageFilterSweep();
+  easeSettled = false;
   $('#count').textContent = `${n.toLocaleString()} of ${N.toLocaleString()}`;
   $('#empty').classList.toggle('on', n === 0);
   const wasNarrow = lastCount <= N * 0.25, isNarrow = n <= N * 0.25;
@@ -1089,6 +1290,32 @@ function applyFilters() {
   // re-frame when a query meaningfully changes how much is on screen, so a
   // narrow result is not left as a speck in the distance
   if (n && (isNarrow !== wasNarrow || isNarrow)) frameCamera();
+}
+
+/**
+ * Dimming 2,619 tiles at once reads as a light switch. Give each a delay by how
+ * far it is from what the camera is looking at, and the result resolves outward
+ * from the centre of the view instead — the same wave the layout morph uses.
+ */
+const FILTER_STAGGER = 0.30;             // seconds between the first tile and the last
+let filterDelay = null;                  // allocated on the first filter change
+let filterT = FILTER_STAGGER;            // >= the longest delay means "nothing pending"
+
+function stageFilterSweep() {
+  if (!filterDelay || filterDelay.length !== N) filterDelay = new Float32Array(N);
+  if (REDUCED) { filterDelay.fill(0); filterT = FILTER_STAGGER; return; }
+  const c = controls.target;
+  let maxD = 0;
+  for (let i = 0; i < N; i++) {
+    const a = i * 3;
+    const dx = posCur[a] - c.x, dy = posCur[a + 1] - c.y, dz = posCur[a + 2] - c.z;
+    const d = dx * dx + dy * dy + dz * dz;
+    filterDelay[i] = d;
+    if (d > maxD) maxD = d;
+  }
+  maxD = Math.sqrt(maxD) || 1;
+  for (let i = 0; i < N; i++) filterDelay[i] = Math.sqrt(filterDelay[i]) / maxD * FILTER_STAGGER;
+  filterT = 0;
 }
 
 function resetFilters() {
@@ -1127,6 +1354,7 @@ function copyPrompt() {
 
 // ---------------------------------------------------------------- loop ------
 let last = performance.now(), fpsAcc = 0, fpsN = 0;
+let easeSettled = false;
 const _camPrev = new THREE.Vector3();
 
 function tick() {
@@ -1137,19 +1365,31 @@ function tick() {
 
   pick();
 
-  // ease per-instance dim/focus toward their targets
+  if (detailFade.size) {
+    for (const [i, v] of detailFade) {
+      const nv = v + (1 - v) * Math.min(1, dt * 4.5);
+      if (nv > 0.998) { aToPos.array[i * 4 + 3] = 1; detailFade.delete(i); }
+      else { detailFade.set(i, nv); aToPos.array[i * 4 + 3] = nv; }
+    }
+    aToPos.needsUpdate = true;
+  }
+
+  // ease per-instance dim/focus toward their targets. `easeSettled` skips the
+  // whole 2,619-wide sweep once nothing is moving, which is most of the time.
   let touched = false;
-  for (let i = 0; i < N; i++) {
-    const dTo = active[i] ? 1 : 0;
+  if (filterT < FILTER_STAGGER) { filterT += dt; touched = true; }
+  if (!easeSettled) for (let i = 0; i < N; i++) {
+    // a tile holds its brightness until its own delay has elapsed
+    const dTo = !filterDelay || filterT >= filterDelay[i] ? (active[i] ? 1 : 0) : dimNow[i];
     const fTo = (i === hovered ? 1 : 0) + (i === selected ? 0.7 : 0);
     const d = dimNow[i] + (dTo - dimNow[i]) * Math.min(1, dt * 6);
     const f = focusNow[i] + (Math.min(1, fTo) - focusNow[i]) * Math.min(1, dt * 10);
-    if (Math.abs(d - dimNow[i]) > 1e-4) { dimNow[i] = d; aDim.array[i] = d; touched = true; }
-    if (Math.abs(f - focusNow[i]) > 1e-4) { focusNow[i] = f; aFocus.array[i] = f; touched = true; }
+    if (Math.abs(d - dimNow[i]) > 1e-4) { dimNow[i] = d; aMeta.array[i * 4 + M_DIM] = d; touched = true; }
+    if (Math.abs(f - focusNow[i]) > 1e-4) { focusNow[i] = f; aMeta.array[i * 4 + M_FOCUS] = f; touched = true; }
   }
-  if (touched) { aDim.needsUpdate = true; aFocus.needsUpdate = true; }
+  if (touched) aMeta.needsUpdate = true; else easeSettled = true;
 
-  if (physReady) stepPhysics(); else advanceMorph(dt);
+  if (physReady) stepPhysics();
 
   // re-elect cache holders a few times a second; walking every record and
   // re-uploading the cache texture is not worth doing per frame
@@ -1160,11 +1400,14 @@ function tick() {
   }
 
   if (fly) {
-    fly.t = Math.min(1, fly.t + dt / 0.85);
-    const e = easeInOut(fly.t);
+    const e = fly.box.t;
     controls.target.lerpVectors(fly.fromT, fly.toT, e);
-    camera.position.lerpVectors(fly.fromP, fly.toP, e);
-    if (fly.t >= 1) fly = null;
+    // Arc around the target rather than cutting a straight line through the
+    // scene: slerp the view direction, lerp the distance.
+    _qa.identity().slerp(fly.turn, e);
+    _pa.copy(fly.fromDir).applyQuaternion(_qa)
+       .multiplyScalar(fly.fromR + (fly.toR - fly.fromR) * e);
+    camera.position.copy(controls.target).add(_pa);
   }
 
   if (labelGroup) {

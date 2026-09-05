@@ -434,9 +434,47 @@ it set to zero, nine seconds of a collapsing pile produced 681 contact events sp
 so it sits at 0.9 to keep the fifth that read as real knocks. Voices are capped at five per frame —
 2,619 bodies settling would otherwise fan out into noise — and everything runs through a compressor.
 
-**Dependencies are vendored** in `web/vendor/` (three 3.6 MB, Rapier 5.9 MB across both builds) so
-the page works offline from a clone, exactly like the committed thumbnails. Only one Rapier build is
-ever fetched at runtime, and only if you enter physics mode.
+**Motion** is the part that took the most measuring. Profiling the running page first
+(`window.__atlas` exposes the renderer, scene, camera and mesh, so this needed no instrumentation)
+showed the frame was not spent where it looked:
+
+| per-frame cost | before | after |
+|---|---|---|
+| picking, on every pointer move | 9.30 ms | **0.03–0.21 ms** |
+| morph matrix compose, during a re-arrangement | 1.78 ms | **0** (no CPU loop) |
+| dim/focus easing, every frame | 0.375 ms | **0.08 ms**, and skipped entirely at rest |
+
+Hovering, in other words, was costing over half a 60 fps budget — spent precisely while the user was
+interacting. `InstancedMesh.raycast` walks all 2,619 instances and runs a full mesh intersection on
+each; a BVH does not help, because the geometry is a two-triangle quad and the cost is the instance
+loop, not the triangle count. A broad phase fixes it: reject by perpendicular distance from the ray
+using the centre already held on the CPU — one dot product, no matrix work — then run the exact quad
+test on the survivors, nearest first, and stop at the first hit.
+
+The re-arrangements moved to the GPU. Positions and orientations are uploaded **once per layout
+change** as from/to instanced attributes, and a single uniform drives the transition; the shader
+lerps position and *nlerps* the quaternion per instance. That buys the staggering: each tile also
+carries a delay derived from **how far it has to travel**, so the furthest leave first and a layout
+resolves as a wave passing through the wall rather than 2,619 tiles switching in lockstep.
+
+![Mid-morph](web/docs/stagger.png)
+
+*Caught mid-transition, grid to sphere: the wall is already bulging outward at the edges while the
+centre has barely left. Read off the GPU part-way through the morph — the wave is the stagger.*
+
+Timing comes from [anime.js](https://animejs.com) v4 (MIT, vendored, 118 KB), driving the morph
+clock and the camera, so those constants live in one place instead of as scattered `dt / 0.95`
+rates. Camera flights are sprung rather than linearly lerped, and **slerp the view direction around
+the orbit target** while lerping the radius, so a flight arcs around the scene instead of cutting
+through the middle of it. Filtering gets the same treatment by a different route: each tile's dim
+carries a delay set by its distance from what the camera is looking at, so a query resolves outward
+from the centre of the view rather than switching the whole wall at once. New full-resolution tiles
+from the detail cache cross-fade in rather than popping. `prefers-reduced-motion` is honoured
+throughout: durations collapse and every stagger and camera arc is dropped.
+
+**Dependencies are vendored** in `web/vendor/` (three 3.6 MB, Rapier 5.9 MB across both builds,
+anime.js 118 KB) so the page works offline from a clone, exactly like the committed thumbnails. Only
+one Rapier build is ever fetched at runtime, and only if you enter physics mode.
 
 ### Regenerating
 
@@ -445,7 +483,7 @@ python3 tools/build_web.py              # both atlas tiers + web/data/records.js
 python3 tools/build_web.py --tier high  # just the 4096² desktop atlas
 ```
 
-### A trap worth knowing
+### Two traps worth knowing
 
 Tiles occasionally rendered split along their diagonal, showing two different images. The cause is
 worth recording because it is invisible until you look: an integer cell index passed to the fragment
@@ -453,6 +491,22 @@ stage arrives as an *interpolated* float, and fp32 can land it a hair either sid
 so `floor()`/`mod()` resolve neighbouring cells for the quad's two triangles. Snapping with
 `floor(x + 0.5)` before decoding makes it exact. A slot-coloured test pattern is what isolated it —
 real thumbnails hide the fault, flat numbered colours do not.
+
+![Painted atlas cells mid-morph](web/docs/atlas-cells.png)
+
+*The regression for it: every atlas cell painted a flat colour and stamped with its index, captured
+mid-flight. Each quad carries exactly one colour and one number — the pairs that look joined are
+adjacent tiles, each with its own outline. A split quad would show two numbers across a diagonal.*
+
+The second cost a day. Moving the morph onto the GPU meant adding instanced attributes, and at a
+certain point the mesh simply rendered **black** — no error, no warning, nothing in the console.
+WebGPU's `maxVertexBuffers` is **8**, three binds one vertex buffer per attribute, and a shader that
+references more than eight silently fails to build a pipeline. The geometry had twelve. The fix is to
+pack: per-instance data now travels as five `vec4`s — `(atlas cell, dim, focus, detail slot)`,
+`(from-position, stagger delay)`, `(to-position, detail cross-fade)` and the two quaternions — and
+`normal` is deleted from the plane geometry, since an unlit material never reads it. That is seven
+attributes with `position` and `uv`, one under the ceiling. Bisecting with a URL switch that dropped
+one attribute at a time is what found it; nothing else pointed at the cause.
 
 ### Verifying it headlessly
 
@@ -560,7 +614,31 @@ Stated plainly rather than papered over:
    `fetch`, and `navigator.gpu`'s secure-context requirement all rule it out, and the page says so
    if you try. The desktop atlas holds a 4096² texture, roughly 67 MB of VRAM, so small-screen
    devices are served a 32px tier at about 17 MB instead.
-7. **125 records have no asset at all** — chiefly article prompts with no nearby image. A further
+7. **Most of what was crawled produced nothing, and it cannot be re-examined.** 5,124 URLs were
+   discovered and fetched, but only **2,008 yielded a record — 3,116 (60.8%) produced none**:
+
+   | barren URLs | shape | |
+   |---|---|---|
+   | 1,862 | `/motion/<uuid>/<uuid>` | 58% of per-example motion pages; 1,325 did produce records |
+   | 399 | `/viral-presets/<slug>/examples/<uuid>` | **88% miss** — the largest proportional gap (54 produced records) |
+   | 122 | `/blog/<slug>` | 96 produced records; the prose classifier rejects the rest |
+   | 103 | `/apps/<slug>` | **never yielded a single record** |
+   | 92 | `/creator-hub/…` | 9 produced records |
+   | 81 | `/academy/<slug>/<slug>/<slug>` | 90 produced records |
+   | 40 | `/original-series/…` | never yielded a record |
+
+   Whether those pages are genuinely empty or the extractors missed them **cannot be settled from
+   this repository**: `pages/` was never committed and appears in no commit in its history, so the
+   corpus is not re-analysable without fetching it again. A future crawl should commit the raw HTML.
+
+8. **Several columns are too sparse to filter on.** Coverage across the 2,747 records:
+   `visual_subject` 88.5% · `prompt_text` 80.4% · `model_or_effect` 78.2% · `generation_style`
+   58.1% · `recreate_model` 50.1% · `description` 12.9% · `aspect_ratio` 7.1% · `lesson_title`
+   5.1% · `duration_sec` 4.5% · `quality` 3.9% (every value is `1080p`) · `preset_name` 3.8% ·
+   **`category` 0.9%** · **`badges` 0.4%**. The last two are present in the schema but carry almost
+   no data; treat them as incidental rather than as dimensions you can slice by.
+
+9. **125 records have no asset at all** — chiefly article prompts with no nearby image. A further
    three have a full-resolution URL but no committed thumbnail (the fetch failed at build time), so
    the gallery, which is driven by thumbnails, shows 2,619 of the 2,622 paired records.
 
