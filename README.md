@@ -398,6 +398,21 @@ worker threads that this comparison did not give it, but that needs cross-origin
 (COOP/COEP headers) which a static file server does not send — single-threaded is the honest
 comparison for how this page is actually served.
 
+**Detail cache.** The base atlas holds every tile at 64px, which is right at a distance and mush up
+close. So a second 2048² texture acts as a *cache* of 64 full-resolution cells, and a per-instance
+attribute chooses the source: the nearest tiles claim slots as you approach and hand them back as
+you leave, so sharpness follows the viewer for a fixed ~16 MB rather than scaling with the
+collection. The HUD reports how many slots are held. It is desktop-only, and `?lod=off` disables it.
+
+The mechanism is adapted from [YaleDHLab/pix-plot](https://github.com/YaleDHLab/pix-plot) (MIT),
+which does this for 100,000+ images — the technique, not the code: theirs is WebGL/regl and predates
+TSL by years.
+
+![Without the detail cache](web/docs/detail-off.png)
+![With the detail cache](web/docs/detail-on.png)
+
+*The same tiles at the same distance, base atlas above and detail cache below.*
+
 **Bloom** follows the r185 selective-bloom pattern from
 `examples/webgpu_postprocessing_bloom_emissive.html`: the scene renders with MRT so an `emissive`
 target rides alongside colour, that target is blurred, and the result is added back. The tile
@@ -429,6 +444,15 @@ ever fetched at runtime, and only if you enter physics mode.
 python3 tools/build_web.py              # both atlas tiers + web/data/records.json
 python3 tools/build_web.py --tier high  # just the 4096² desktop atlas
 ```
+
+### A trap worth knowing
+
+Tiles occasionally rendered split along their diagonal, showing two different images. The cause is
+worth recording because it is invisible until you look: an integer cell index passed to the fragment
+stage arrives as an *interpolated* float, and fp32 can land it a hair either side of a whole number,
+so `floor()`/`mod()` resolve neighbouring cells for the quad's two triangles. Snapping with
+`floor(x + 0.5)` before decoding makes it exact. A slot-coloured test pattern is what isolated it —
+real thumbnails hide the fault, flat numbered colours do not.
 
 ### Verifying it headlessly
 

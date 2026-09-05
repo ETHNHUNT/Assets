@@ -12,7 +12,8 @@
  */
 import * as THREE from 'three/webgpu';
 import {
-  attribute, uv, vec2, vec3, vec4, float, texture, mix, smoothstep, positionLocal,
+  attribute, uv, vec2, vec3, vec4, float, texture, mix, smoothstep, step as tslStep,
+  positionLocal,
   pass, mrt, output,
 } from 'three/tsl';
 import { bloom } from 'three/addons/tsl/display/BloomNode.js';
@@ -28,7 +29,7 @@ let DATA, ATLAS, PER_ROW, N;
 let renderer, scene, camera, controls, mesh, dust;
 let pipeline = null, bloomPass = null, bloomOn = true;
 const audio = new AtlasAudio();
-let aCell, aDim, aFocus;                 // instanced attributes
+let aCell, aDim, aFocus, aDetail;        // instanced attributes
 let posCur, posTo, quatCur, quatTo;      // morph buffers
 let morph = 1;                           // 1 = settled
 let active = null;                       // Uint8Array: does record pass filters
@@ -91,6 +92,16 @@ async function boot() {
 
     window.__atlas = { THREE, renderer, scene, camera, mesh, controls, audio,
       get pipeline() { return pipeline; }, setBloom,
+      get detail() {
+        if (!DETAIL) return null;
+        return { slots: DETAIL_SLOTS, held: slotOwner.reduce((a, v) => a + (v >= 0 ? 1 : 0), 0),
+                 filled: detailFilled, inFlight: detailLoads,
+                 bound: Array.from(aDetail.array).filter((v) => v >= 0).length };
+      },
+      forceDetail() { detailDue = 0; updateDetailCache(); },
+      get morph() { return morph; },
+      get detailCanvas() { return detailCtx && detailCtx.canvas; },
+      get detailTex() { return DETAIL; },
       get info() { return renderer.info; },
       // headless screenshots cannot capture a WebGPU swapchain, so verification
       // reads the pixels back off the GPU instead
@@ -147,6 +158,137 @@ async function initRenderer() {
               el.style.background = 'rgba(70,52,25,.35)'; }
 }
 
+// -------------------------------------------------------- detail cache ------
+/**
+ * Level-of-detail, after the mechanism in YaleDHLab/pix-plot (MIT, 2020) — the
+ * technique, not the code: theirs is WebGL/regl and predates TSL by years.
+ *
+ * The base atlas holds all 2,619 tiles at 64px, which is right at a distance and
+ * mush up close. So a second, small texture acts as a *cache* of full-resolution
+ * cells, and a per-instance attribute says which source to sample: -1 means the
+ * base atlas, anything else is a slot in the cache. As the camera moves, the
+ * nearest tiles claim slots and departed ones give them back, so detail follows
+ * the viewer for a fixed 16 MB rather than scaling with the collection.
+ */
+const DETAIL_SIDE = 2048, DETAIL_CELL = 256;
+const DETAIL_PER_ROW = DETAIL_SIDE / DETAIL_CELL;          // 8
+const DETAIL_SLOTS = DETAIL_PER_ROW * DETAIL_PER_ROW;      // 64 crisp tiles
+const DETAIL_MIN_PX = 74;        // only worth loading once a tile is this big on screen
+let DETAIL = null, detailCtx = null;
+let slotOwner = null;            // slot -> record index, or -1
+let recordSlot = null;           // record index -> slot, or -1
+let detailFree = [];
+let detailLoads = 0, detailFilled = 0, detailDue = 0;
+// Decoded images wait here and are blitted at a frame boundary. Drawing straight
+// from onload lets a write land between needsUpdate and the GPU's copy of the
+// canvas, which shows up as a torn cell.
+let detailPending = [];
+
+function buildDetailCache() {
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = DETAIL_SIDE;
+  detailCtx = canvas.getContext('2d', { willReadFrequently: false });
+  detailCtx.fillStyle = '#0a0c10';
+  detailCtx.fillRect(0, 0, DETAIL_SIDE, DETAIL_SIDE);
+
+  DETAIL = new THREE.Texture(canvas);
+  DETAIL.colorSpace = THREE.SRGBColorSpace;
+  DETAIL.flipY = false;
+  DETAIL.minFilter = THREE.LinearFilter;      // no mipmaps: cells change at runtime
+  DETAIL.magFilter = THREE.LinearFilter;
+  DETAIL.generateMipmaps = false;
+  DETAIL.needsUpdate = true;
+
+  slotOwner = new Int32Array(DETAIL_SLOTS).fill(-1);
+  recordSlot = new Int32Array(N).fill(-1);
+  detailFree = Array.from({ length: DETAIL_SLOTS }, (_, i) => i);
+}
+
+/** Screen size of a unit tile at distance d, in pixels. */
+function tilePixels(d) {
+  const focal = (innerHeight * 0.5) / Math.tan((camera.fov * Math.PI / 180) * 0.5);
+  return focal / Math.max(d, 0.001);
+}
+
+function releaseSlot(slot) {
+  const i = slotOwner[slot];
+  if (i < 0) return;
+  slotOwner[slot] = -1;
+  recordSlot[i] = -1;
+  if (aDetail.array[i] !== -1) { aDetail.array[i] = -1; aDetail.needsUpdate = true; }
+  detailFree.push(slot);
+  detailPending = detailPending.filter((q) => q.slot !== slot);
+}
+
+function loadDetail(i, slot) {
+  const rec = DATA.records[i];
+  if (!rec.th) { releaseSlot(slot); return; }
+  detailLoads++;
+  const img = new Image();
+  img.decoding = 'async';
+  img.onload = () => {
+    detailLoads--;
+    if (slotOwner[slot] !== i) return;                 // evicted while in flight
+    detailPending.push({ i, slot, img });
+  };
+  img.onerror = () => { detailLoads--; if (slotOwner[slot] === i) releaseSlot(slot); };
+  img.src = `../assets/${rec.th}`;
+}
+
+/** Blit decoded images into the cache and upload once. Called from the loop. */
+function flushDetail() {
+  if (!detailPending.length) return;
+  let wrote = 0;
+  while (detailPending.length && wrote < 6) {
+    const { i, slot, img } = detailPending.shift();
+    if (slotOwner[slot] !== i) continue;               // evicted while queued
+    const sx = (slot % DETAIL_PER_ROW) * DETAIL_CELL;
+    const sy = Math.floor(slot / DETAIL_PER_ROW) * DETAIL_CELL;
+    const side = Math.min(img.width, img.height);
+    if (!side) continue;
+    detailCtx.clearRect(sx, sy, DETAIL_CELL, DETAIL_CELL);
+    // centre-crop to square, matching how tools/build_web.py packs the atlas
+    detailCtx.drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side,
+                        sx, sy, DETAIL_CELL, DETAIL_CELL);
+    aDetail.array[i] = slot;
+    detailFilled++; wrote++;
+  }
+  if (wrote) { DETAIL.needsUpdate = true; aDetail.needsUpdate = true; }
+}
+
+/**
+ * Re-elect which records hold the cache. Runs a few times a second, not per
+ * frame: it walks every record, and a full texture re-upload is not free.
+ */
+function updateDetailCache() {
+  if (!DETAIL) return;
+  const maxDist = tilePixels(1) / DETAIL_MIN_PX;      // distance at which a tile fills DETAIL_MIN_PX
+  const cam = camera.position;
+  const near = [];
+  for (let i = 0; i < N; i++) {
+    if (!active[i]) continue;
+    const a = i * 3;
+    const dx = posCur[a] - cam.x, dy = posCur[a + 1] - cam.y, dz = posCur[a + 2] - cam.z;
+    const d2 = dx * dx + dy * dy + dz * dz;
+    if (d2 < maxDist * maxDist) near.push([d2, i]);
+  }
+  near.sort((p, q) => p[0] - q[0]);
+  const want = new Set();
+  for (let k = 0; k < Math.min(near.length, DETAIL_SLOTS); k++) want.add(near[k][1]);
+
+  for (let slot = 0; slot < DETAIL_SLOTS; slot++) {
+    const owner = slotOwner[slot];
+    if (owner >= 0 && !want.has(owner)) releaseSlot(slot);
+  }
+  for (const i of want) {
+    if (recordSlot[i] >= 0 || !detailFree.length) continue;
+    if (detailLoads >= 8) break;                       // keep the network queue short
+    const slot = detailFree.pop();
+    slotOwner[slot] = i; recordSlot[i] = slot;
+    loadDetail(i, slot);
+  }
+}
+
 // --------------------------------------------------------------- scene ------
 function buildScene() {
   scene = new THREE.Scene();
@@ -166,13 +308,20 @@ function buildScene() {
   // ---- per-instance data -------------------------------------------------
   const geo = new THREE.PlaneGeometry(1, 1);
   const cell = new Float32Array(N), dim = new Float32Array(N), foc = new Float32Array(N);
-  for (let i = 0; i < N; i++) { cell[i] = DATA.records[i].i; dim[i] = 1; foc[i] = 0; }
+  const det = new Float32Array(N);
+  for (let i = 0; i < N; i++) { cell[i] = DATA.records[i].i; dim[i] = 1; foc[i] = 0; det[i] = -1; }
   aCell = new THREE.InstancedBufferAttribute(cell, 1);
   aDim = new THREE.InstancedBufferAttribute(dim, 1);
   aFocus = new THREE.InstancedBufferAttribute(foc, 1);
+  aDetail = new THREE.InstancedBufferAttribute(det, 1);   // -1 = sample the base atlas
   geo.setAttribute('aCell', aCell);
   geo.setAttribute('aDim', aDim);
   geo.setAttribute('aFocus', aFocus);
+  geo.setAttribute('aDetail', aDetail);
+
+  // must precede tileMaterial(): the material samples DETAIL if it exists
+  const lodOff = new URLSearchParams(location.search).get('lod') === 'off';
+  if (!lodOff && !matchMedia('(max-width:820px)').matches) buildDetailCache();
 
   mesh = new THREE.InstancedMesh(geo, tileMaterial(), N);
   mesh.frustumCulled = false;
@@ -191,18 +340,33 @@ function buildScene() {
 function tileMaterial() {
   const mat = new THREE.MeshBasicNodeMaterial({ side: THREE.DoubleSide });
 
-  const cell = attribute('aCell', 'float');
   const dim = attribute('aDim', 'float');
   const foc = attribute('aFocus', 'float');
+
+  // An integer index reaches the fragment stage as an interpolated float, and
+  // fp32 can land it a hair either side of a whole number — floor()/mod() then
+  // resolve neighbouring cells for the quad's two triangles, splitting the tile
+  // along its diagonal. Snapping to the nearest integer first makes it exact.
+  const snap = (v) => v.add(float(0.5)).floor();
+
+  // flipY is off on both textures, so row 0 is the top of the image
+  const cellLocal = vec2(uv().x, uv().y.oneMinus());
+
   const per = float(PER_ROW);
+  const cell = snap(attribute('aCell', 'float'));
+  const auv = vec2(cell.mod(per), cell.div(per).floor()).add(cellLocal).div(per);
 
-  // atlas cell -> uv window. flipY is off, so row 0 is the top of the image.
-  const col = cell.mod(per);
-  const row = cell.div(per).floor();
-  const auv = vec2(col.add(uv().x).div(per), row.add(uv().y.oneMinus()).div(per));
+  let base = texture(ATLAS, auv).rgb;
 
-  const tex = texture(ATLAS, auv);
-  const base = tex.rgb;
+  if (DETAIL) {
+    // Both textures are sampled and mixed rather than branched: a per-instance
+    // branch diverges across a wavefront for no saving on two texture reads.
+    const dper = float(DETAIL_PER_ROW);
+    const det = attribute('aDetail', 'float');
+    const dsnap = snap(det);
+    const duv = vec2(dsnap.mod(dper), dsnap.div(dper).floor()).add(cellLocal).div(dper);
+    base = mix(base, texture(DETAIL, duv).rgb, tslStep(float(0), det));
+  }
   const lum = base.r.mul(0.299).add(base.g.mul(0.587)).add(base.b.mul(0.114));
   const ghost = vec3(lum.mul(0.30), lum.mul(0.33), lum.mul(0.46));   // cold, receded
   const lit = mix(ghost, base, dim).add(vec3(0.15, 0.17, 0.28).mul(foc));
@@ -912,6 +1076,10 @@ function applyFilters() {
     active[i] = ok ? 1 : 0;
     if (ok) n++;
   }
+  if (DETAIL) {
+    for (let i = 0; i < N; i++) if (!active[i] && recordSlot[i] >= 0) releaseSlot(recordSlot[i]);
+    detailDue = 0;
+  }
   $('#count').textContent = `${n.toLocaleString()} of ${N.toLocaleString()}`;
   $('#empty').classList.toggle('on', n === 0);
   const wasNarrow = lastCount <= N * 0.25, isNarrow = n <= N * 0.25;
@@ -963,7 +1131,8 @@ const _camPrev = new THREE.Vector3();
 
 function tick() {
   const now = performance.now();
-  const dt = Math.min(0.05, (now - last) / 1000);
+  const raw = (now - last) / 1000;      // real elapsed, for the meter
+  const dt = Math.min(0.05, raw);       // clamped, so a stall cannot jump the sim
   last = now;
 
   pick();
@@ -981,6 +1150,14 @@ function tick() {
   if (touched) { aDim.needsUpdate = true; aFocus.needsUpdate = true; }
 
   if (physReady) stepPhysics(); else advanceMorph(dt);
+
+  // re-elect cache holders a few times a second; walking every record and
+  // re-uploading the cache texture is not worth doing per frame
+  if (DETAIL) {
+    flushDetail();                       // blit before this frame's render
+    detailDue -= dt;
+    if (detailDue <= 0 && morph >= 1) { detailDue = 0.22; updateDetailCache(); }
+  }
 
   if (fly) {
     fly.t = Math.min(1, fly.t + dt / 0.85);
@@ -1007,10 +1184,14 @@ function tick() {
   controls.update();
   if (pipeline) pipeline.render(); else renderer.render(scene, camera);
 
-  fpsAcc += dt; fpsN++;
+  // measure with real elapsed time: accumulating the clamped dt reports a
+  // flattering number and a late one exactly when frames are slow
+  fpsAcc += raw; fpsN++;
   if (fpsAcc >= 0.5) {
     const fps = Math.round(fpsN / fpsAcc);
+    const held = DETAIL ? slotOwner.reduce((a, v) => a + (v >= 0 ? 1 : 0), 0) : 0;
     $('#fps').textContent = `${fps} fps · ${N.toLocaleString()} tiles · 1 draw call` +
+      (DETAIL ? ` · ${held}/${DETAIL_SLOTS} full-res` : '') +
       (physReady ? ` · ${bodies.size.toLocaleString()} rigid bodies` : '');
     fpsAcc = 0; fpsN = 0;
   }
