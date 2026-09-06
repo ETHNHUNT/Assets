@@ -553,6 +553,33 @@ pack: per-instance data now travels as five `vec4`s — `(atlas cell, dim, focus
 attributes with `position` and `uv`, one under the ceiling. Bisecting with a URL switch that dropped
 one attribute at a time is what found it; nothing else pointed at the cause.
 
+### The modules
+
+`web/app.js` was 1,673 lines in which layout, morph, physics and the LOD cache all wrote the
+same five instance buffers. It is now the shell — boot, material, picking, UI, camera — and
+each writer is its own file:
+
+| File | Owns | Lines |
+|---|---|---|
+| `app.js` | boot, TSL material, picking, DOM, camera flight | 1,320 |
+| `morph.js` | `MorphController` — `posCur`/`posTo`/`quatCur`/`quatTo`, the A/B upload, the stagger, the anime.js clock | 215 |
+| `detail.js` | `DetailCache` — the full-res cell texture, election, cross-fade | 210 |
+| `audio.js` | `AtlasAudio` — procedural sound | 201 |
+| `layouts.js` | the six arrangements, as pure maths | 182 |
+| `physics.js` | `PhysicsWorld` — the rigid-body pile | 164 |
+| `highlight.js` | `Highlight` — the dim and focus sweep | 115 |
+
+The boundaries are drawn on **who writes which lane of which buffer**, not on what reads
+nicely. WebGPU guarantees only eight vertex buffers and the geometry spends two, so every
+per-instance value is packed into five `vec4`s — and the consequence is that `aToPos` has
+two owners at the same instant (`.xyz` is the morph's, `.w` is the cache's cross-fade) and
+`aMeta` has three. They coexist only because each touches its own lanes.
+
+So the rule every module states at the top of itself: **write lanes, never arrays.** A
+`.set()` over an attribute would be shorter, faster, and would silently blank whatever the
+other owner had just put there. The full map is the comment above `M_CELL` in `app.js`, and
+it is the list the verifier's scenes are chosen from.
+
 ### Feature flags
 
 Every subsystem can be switched off from the query string, which is what makes the atlas
@@ -591,17 +618,51 @@ What it compares is a **16×16 grid of mean luma**, not raw pixels — a softwar
 and a real GPU disagree in the low bits of every antialiased edge, but they agree on where
 the tiles are.
 
-Eight scenes, chosen so that every system that writes the per-instance buffers is on screen
-in at least one of them:
+Eleven scenes, one per writer of the per-instance buffers — that is the selection rule,
+and the ownership map at the top of `web/app.js` is the list it is drawn from:
 
-| Scene | Covers |
+| Scene | Covers | Asserts it actually ran |
+|---|---|---|
+| `grid-front`, `grid-angled`, `sphere`, `helix`, `towers`, `by-model` | layout and morph | — |
+| `physics-pile` | `PhysicsWorld`, `posCur`/`quatCur` | 2,936 bodies, 240 seeded steps, and refuses to record an unseeded pile |
+| `detail-closeup` | the LOD cache, `aToPos.w` and `aMeta.w` | 64/64 cells bound, or the scene fails |
+| `filtered` | the dim lane, `aMeta.y`, mid-wave | at least one lane moved |
+| `hovered` | the focus lane, `aMeta.z` | same camera as `grid-front`, so the only difference is one highlighted tile |
+| `filter-cleared` | the clear path | every tile lit afterwards, and the stagger delays clamped |
+
+**The right-hand column is the part that matters.** Three times a scene has been added, gone
+green, and been covering nothing: physics was disabled by `physics=0`, the LOD cache never
+elects anything past ~8 units so no scene was close enough, and the filter stagger is
+flattened to all-zero delays by `prefers-reduced-motion`, which the harness sets so that
+morphs land instantly. Each time the tell was identical — a scene that passed without its
+subsystem ever having run. A check that measures nothing is worse than no check, because it
+is the thing that lets a bug through while reporting green. So every scene that exists to
+exercise a subsystem now proves it did.
+
+`filter-cleared` is checked by its post-condition rather than by its pixels, because the bug
+it guards against strands exactly one tile in 2,936 and that moves no luma cell past a
+tolerance of 3. It also turns reduced motion back off for itself — the only place that
+should happen — since otherwise the very path it tests does not run.
+
+### The camera has to be nailed down, and once was not
+
+`__atlas.park()` exists because OrbitControls damping never settles on its own. It was not
+enough. A camera flight outranks anything written to `camera.position`, since `tick()`
+re-derives the position from `fly` every frame until the animation ends — and one runs for
+about a second after boot. A park to `(0, 0, 96)` measured sliding to
+`(-0.75, 7.01, 75.16)` within 600 ms, then holding once the flight finished:
+
+| capture | position after 600 ms |
 |---|---|
-| `grid-front`, `grid-angled`, `sphere`, `helix`, `towers`, `by-model` | layout and morph |
-| `physics-pile` | `PhysicsWorld` — 2,936 rigid bodies, 240 seeded steps |
-| `detail-closeup` | the LOD cache — 64/64 full-res tiles bound |
+| #0 | `(-0.749, 7.012, 75.159)` |
+| #1 | `(-0.750, 7.010, 75.124)` |
+| #2 | `(0, 0, 96)` |
 
-The last two are not optional extras. Physics and the detail cache are the other writers of
-`aToPos` and `aMeta`, so a baseline without them would pass a refactor that broke either.
+So the early captures in a page were framed differently from the later ones — up to
+**maxΔ 93** on one scene — and which you got depended on how many renders had happened
+first. `park()` now cancels the flight, drops damping, flushes the pending deltas and
+re-asserts the position. If a scene ever moves by a large amount for no reason anyone can
+name, suspect the camera before the code.
 
 Calibration, measured per scene kind — noise is repeat runs against an unchanged baseline,
 signal is a deliberate ~1% perturbation of that scene's own code:
@@ -611,10 +672,34 @@ signal is a deliberate ~1% perturbation of that scene's own code:
 | layout | **0** | **14** | grid pitch 1.5 → 1.52 |
 | physics | **0–1** | **7** | linear damping 0.16 → 0.1618 |
 | detail | **0–1** | **12** | centre-crop offset `/2` → `/2.4` |
+| highlight | **0** | fails outright | remove the stagger clamp — see below |
 
 The default tolerance of **3** sits above every noise floor and well below every signal.
 Layout scenes reproduce exactly; physics and the detail cache carry a little float and
 decode noise, so a tolerance of 0 would be unusable.
+
+### The stagger clamp, and why one tile used to stay dark
+
+`Highlight.stageSweep` gives each tile a delay so a filter reads as a wave crossing the
+scene, and those delays are normalised so the furthest tile's is exactly `stagger`. The
+delays live in a `Float32Array`, and 0.30 does not survive that round trip:
+
+```
+stagger as float64: 0.3
+stagger as float32: 0.30000001192092896
+```
+
+The timer advances only while `t < stagger`, so it stops at the first value at or above the
+float64 0.30 — which can be below the float32 one. That single tile then never satisfies
+`t >= delay[i]`, so its target holds where it was, nothing reports as touched, the sweep
+latches settled, and it stays filtered-out until something else invalidates. Always the tile
+furthest from the view centre, on roughly two clears in three.
+
+Clamping every delay to `0.999 * stagger` fixes it. `filter-cleared` asserts the margin
+rather than the boundary: unclamped, the furthest delay lands within a rounding step of
+`stagger` and can fall either side, so testing `>= stagger` passes on some runs while the
+bug is present. Against the margin it fails on every run, reporting `0.30000001192092896` —
+which is the whole bug in one number.
 
 ### Why the physics body count is not capped on desktop
 
@@ -692,7 +777,8 @@ Run it before pushing anything that touches `web/`:
 python3 tools/verify_web.py --tag <your-machine>
 ```
 
-The refactors in `web/morph.js`, `web/physics.js` and `web/layouts.js` were each verified
+The refactors in `web/morph.js`, `web/physics.js`, `web/layouts.js`, `web/detail.js` and
+`web/highlight.js` were each verified
 this way, against a baseline captured before the change. That is the workflow — capture
 first, refactor, check — and it is worth more than a CI job that is right half the time.
 
