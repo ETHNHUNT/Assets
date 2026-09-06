@@ -72,6 +72,15 @@ select:focus{border-color:var(--acc)}
 #detail.open{transform:none}
 .dhead{padding:14px 16px;border-bottom:1px solid var(--line);display:flex;gap:10px;align-items:flex-start}
 .dhead h2{margin:0;font-size:14px;font-weight:650;flex:1;line-height:1.35}
+.dnav{display:flex;align-items:center;gap:2px}
+.dnav button{background:none;border:0;color:var(--dim);font-size:19px;line-height:1;
+  padding:1px 7px;cursor:pointer;border-radius:6px}
+.dnav button:hover:not(:disabled){background:rgba(124,140,255,.16);color:var(--fg)}
+.dnav button:disabled{opacity:.28;cursor:default}
+.dpos{font-size:11px;color:var(--dim);min-width:58px;text-align:center;
+  font-variant-numeric:tabular-nums}
+#dtags .t{cursor:pointer}
+#dtags .t:hover{background:rgba(124,140,255,.22)}
 #dclose{background:none;border:1px solid var(--line);border-radius:7px;width:26px;height:26px;
   cursor:pointer;color:var(--mut);flex:none;line-height:1}
 #dclose:hover{color:var(--ink)}
@@ -202,6 +211,11 @@ kbd{background:#141822;border:1px solid var(--line);border-radius:4px;padding:0 
 <aside id="detail">
   <div class="dhead">
     <h2 id="dname"></h2>
+    <span class="dnav">
+      <button id="dprev" aria-label="Previous match" title="Previous match (&larr;)">&lsaquo;</button>
+      <span id="dpos" class="dpos"></span>
+      <button id="dnext" aria-label="Next match" title="Next match (&rarr;)">&rsaquo;</button>
+    </span>
     <button id="dclose" aria-label="Close">&times;</button>
   </div>
   <div class="dbody">

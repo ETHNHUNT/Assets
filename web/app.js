@@ -392,6 +392,12 @@ async function boot() {
         }));
       },
       isolate(key) { isolateModel(key); return $('#count').textContent; },
+      /** Step the open record through the filtered set, as the arrows do. */
+      step(delta) { stepDetail(delta); return $('#dpos').textContent; },
+      get nav() {
+        return { pos: $('#dpos').textContent,
+                 prevDisabled: $('#dprev').disabled, nextDisabled: $('#dnext').disabled };
+      },
       wordCounts(ids) { return ids.map((i) => DATA.records[i].w || 0); },
       hover(i) { hovered = i; highlight.invalidate(); },
       clearHighlight() { hovered = -1; selected = -1; sortBy = '';
@@ -1026,14 +1032,21 @@ function selectIndex(i) {
   $('#dimg').src = `../assets/${r.th}`;
   $('#dprompt').textContent = r.p || '(this preset publishes no prompt text)';
   $('#dcopy').style.display = r.p ? '' : 'none';
+  // Tags that filter. A pill naming a model you cannot click is decoration; the same
+  // argument as the cluster labels, and the same fix. Only the three that map onto a
+  // filter carry a target — style and subject pills stay inert rather than pretending.
   const tags = [];
-  if (r.m) tags.push(`<span class="t m">${esc(r.m)}</span>`);
-  if (r.t) tags.push(`<span class="t">${esc(r.t)}</span>`);
-  r.s.slice(0, 3).forEach((x) => tags.push(`<span class="t">${esc(x)}</span>`));
-  r.v.slice(0, 2).forEach((x) => tags.push(`<span class="t">${esc(x)}</span>`));
-  if (r.k) tags.push(`<span class="t">${esc(r.k)}</span>`);
-  if (r.g) tags.push(`<span class="t">${esc(r.g)}</span>`);
+  const pill = (text, kind, value) =>
+    `<span class="t${kind === 'model' ? ' m' : ''}"` +
+    (value ? ` data-f="${kind}" data-v="${esc(value)}"` : '') + `>${esc(text)}</span>`;
+  if (r.m) tags.push(pill(r.m, 'model', r.m));
+  if (r.t) tags.push(pill(r.t, 'tool', r.t));
+  r.s.slice(0, 3).forEach((x) => tags.push(pill(x, 'style', x)));
+  r.v.slice(0, 2).forEach((x) => tags.push(pill(x, '', null)));
+  if (r.k) tags.push(pill(r.k, '', null));
+  if (r.g) tags.push(pill(r.g, '', null));
   $('#dtags').innerHTML = tags.join('');
+  updateDetailNav();
   $('#drid').textContent = r.id;
   $('#dsrc').textContent = r.u; $('#dsrc').href = r.u;
   $('#dfull').textContent = r.f ? 'Full-resolution original ↗' : '';
@@ -1102,6 +1115,32 @@ const _fwd = new THREE.Vector3();   // scratch for the audio listener's facing
 
 
 let pushedDetail = false;
+
+/**
+ * Where the open record sits in the set you are working, and whether there is more.
+ *
+ * The panel used to be a dead end: open a tile and the only way on was back out to
+ * the scene and finding the next one by eye. Stepping is over the filtered set in
+ * laid-out order, so it agrees with what is on screen and with whatever sort is
+ * active rather than with the order the records happen to be stored in.
+ */
+function updateDetailNav() {
+  const list = activeList();
+  const at = list.indexOf(selected);
+  $('#dpos').textContent = at < 0 ? '' : `${at + 1} of ${list.length.toLocaleString()}`;
+  $('#dprev').disabled = at <= 0;
+  $('#dnext').disabled = at < 0 || at >= list.length - 1;
+}
+
+/** Step to the next or previous record in the set currently on screen. */
+function stepDetail(delta) {
+  const list = activeList();
+  const at = list.indexOf(selected);
+  if (at < 0) return;
+  const next = at + delta;
+  if (next < 0 || next >= list.length) return;
+  selectIndex(list[next]);
+}
 
 function closeDetail(fromPop) {
   selected = -1;
@@ -1176,6 +1215,22 @@ function buildUI() {
   }
   $('#f-kind').onchange = applyFilters;
   $('#f-sort').onchange = () => { sortBy = $('#f-sort').value; layout(null); };
+
+  $('#dprev').onclick = () => stepDetail(-1);
+  $('#dnext').onclick = () => stepDetail(1);
+
+  // Delegated, because the pills are rewritten on every selection.
+  $('#dtags').onclick = (e) => {
+    const t = e.target.closest('[data-f]');
+    if (!t) return;
+    const kind = t.dataset.f, value = t.dataset.v;
+    $('#q').value = '';
+    if (kind === 'model') $('#f-model').value = value === NO_MODEL_LABEL ? NO_MODEL : value;
+    if (kind === 'tool') $('#f-tool').value = value;
+    if (kind === 'style') $('#f-style').value = value;
+    applyFilters();
+    frameCamera();
+  };
   $('#reset').onclick = resetFilters;
   $('#q').oninput = debounce(applyFilters, 180);
   if (SMALL) $('#q').placeholder = 'Search prompts\u2026';   // the long one truncates
@@ -1199,6 +1254,10 @@ function buildUI() {
 
   addEventListener('keydown', (e) => {
     if (e.key === 'Escape') { closeDetail(); $('#q').blur(); }
+    if ($('#detail').classList.contains('open') && document.activeElement !== $('#q')) {
+      if (e.key === 'ArrowLeft') { e.preventDefault(); stepDetail(-1); }
+      if (e.key === 'ArrowRight') { e.preventDefault(); stepDetail(1); }
+    }
     if (e.key === '/' && document.activeElement !== $('#q')) { e.preventDefault(); $('#q').focus(); }
     if ((e.key === 'i' || e.key === 'I') && document.activeElement !== $('#q')) {
       if (mode === 'sphere') {
@@ -1245,6 +1304,7 @@ function applyFilters() {
   if (detail) detail.releaseInactive(active);
   highlight.stageSweep(posCur, controls.target);
   highlight.invalidate();
+  if ($('#detail').classList.contains('open')) updateDetailNav();
   $('#count').textContent = `${n.toLocaleString()} of ${N.toLocaleString()}`;
   $('#empty').classList.toggle('on', n === 0);
   const wasNarrow = lastCount <= N * 0.25, isNarrow = n <= N * 0.25;
