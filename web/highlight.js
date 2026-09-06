@@ -103,8 +103,15 @@ export class Highlight {
         // part of the set being looked at, just several at once.
         const fTo = (i === hovered ? 1 : 0) + (i === selected ? 0.7 : 0)
                   + (compare && compare[i] ? 0.7 : 0);
-        const d = dimNow[i] + (dTo - dimNow[i]) * Math.min(1, dt * 6);
-        const f = focusNow[i] + (Math.min(1, fTo) - focusNow[i]) * Math.min(1, dt * 10);
+        // Snap the last thousandth. Both of these approach their target asymptotically
+        // and the sweep stops once a step falls under 1e-4, so a settled tile lands
+        // *near* 1 rather than at it — and exactly how near depends on how many frames
+        // happened to elapse. That is invisible to the eye and fatal to a baseline:
+        // the hovered scene drifted by up to maxD 7 between runs of identical code.
+        const snap = (v, to) => (Math.abs(to - v) < 1e-3 ? to : v);
+        const d = snap(dimNow[i] + (dTo - dimNow[i]) * Math.min(1, dt * 6), dTo);
+        const fT = Math.min(1, fTo);
+        const f = snap(focusNow[i] + (fT - focusNow[i]) * Math.min(1, dt * 10), fT);
         if (Math.abs(d - dimNow[i]) > 1e-4) {
           dimNow[i] = d; aMeta.array[i * 4 + this.DIM] = d; touched = true;
         }

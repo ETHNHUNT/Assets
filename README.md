@@ -390,6 +390,18 @@ It has to be served over HTTP. Opening `web/index.html` from disk fails twice ov
 | **Helix** | a spiral column you can fly down |
 | **By model** | the twelve largest models as labelled blocks, the tail rolled into one — small multiples, so block sizes compare directly |
 
+**The corpus exists as text, not only as pixels.** `tools/build_static.py` writes
+`web/prompts/` — every prompt as ordinary paginated HTML, linked from the header and from
+a `<noscript>`, each record anchored by id and linking back into the atlas at itself. The
+atlas page carries 90 words of markup; the corpus is 3.1 MB of prompt text that used to
+exist only after JavaScript ran and only as pixels, which is to say invisible to a search
+engine, a text browser, and anything that never gets as far as running the scene.
+
+Paginated at 250 records because 2,936 is about 4.5 MB of markup, and a 4.5 MB page is
+impolite to a crawler and unusable on a phone. Twelve pages of ~350 KB are neither. It is
+not a second interface — no controls, no state, no script — it is the content in the form
+the web was built to carry.
+
 **Everything is reachable from the keyboard**, which it was not. The arrows used to work
 only once a record was open, and opening one needed a click — so all 2,936 records were
 unreachable without a pointer. That is not a missing convenience, it is the whole dataset.
