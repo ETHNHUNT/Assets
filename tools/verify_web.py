@@ -98,18 +98,36 @@ LINUX_VULKAN_FLAGS = ["--enable-features=Vulkan", "--disable-vulkan-surface"]
 # is reproducible about it is "exactly N steps from a seeded start", so the page is
 # asked to run those steps synchronously rather than waited on.
 SCENES = [
-    ("grid-front",   "grid",     (0, 0, 96),    None),
-    ("grid-angled",  "grid",     (60, 34, 70),  None),
-    ("sphere",       "sphere",   (0, 10, 120),  None),
-    ("helix",        "helix",    (0, 0, 130),   None),
-    ("towers",       "towers",   (0, 20, 150),  None),
-    ("by-model",     "model",    (0, 20, 150),  None),
-    ("physics-pile", "physics",  (0, 6, 120),   240),
+    ("grid-front",   "grid",     (0, 0, 96),    None, None),
+    ("grid-angled",  "grid",     (60, 34, 70),  None, None),
+    ("sphere",       "sphere",   (0, 10, 120),  None, None),
+    ("helix",        "helix",    (0, 0, 130),   None, None),
+    ("towers",       "towers",   (0, 20, 150),  None, None),
+    ("by-model",     "model",    (0, 20, 150),  None, None),
+    ("physics-pile", "physics",  (0, 6, 120),   240,  None),
     # Close enough to trip the detail cache. A tile has to cover DETAIL_MIN_PX (74px)
     # before it is worth a full-res load, which works out at roughly 8 units — every
     # other scene here sits at 96 or further, so without this one the LOD path, and the
     # aToPos.w / aMeta writes it owns, are never executed at all.
-    ("detail-closeup", "grid",   (0, 0, 7),     None),
+    ("detail-closeup", "grid",   (0, 0, 7),     None, None),
+
+    # The two lanes highlight.js owns are invisible to every scene above: nothing is
+    # filtered and nothing is hovered, so dim sits at 1, focus at 0, and the easing
+    # loop never writes. These two are the only ones that execute it — a filter is the
+    # dim lane mid-wave, a hover is the focus lane. The bug that stranded the furthest
+    # tile after a filter cleared lived here for the whole life of the harness.
+    ("filtered",       "grid",   (0, 0, 96),    None, {"filter": "portrait"}),
+    # Same camera as grid-front on purpose: the only difference between the two frames
+    # is the focus lane on one tile, so this is a controlled comparison rather than a
+    # new view. A closer camera was tried and was not stable — at z=24 the frame varied
+    # by maxD 118 between runs whose highlight lanes read identically, so whatever moved
+    # was not what this scene is here to measure.
+    ("hovered",        "grid",   (0, 0, 96),    None, {"hover": 1462}),
+    # Filter, then clear, then assert every tile came back. A stranded tile is one of
+    # 2,936 and moves no luma cell past a tolerance of 3, so this scene is checked by
+    # its post-condition rather than by its signature — the pixels are captured too,
+    # but they are not what would fail.
+    ("filter-cleared", "grid",   (0, 0, 96),    None, {"filter": "portrait", "clear": True}),
 ]
 
 # Any fixed value works; it only has to be the same one the baseline was captured with.
@@ -134,6 +152,88 @@ def serve(port):
     httpd = socketserver.TCPServer(("127.0.0.1", port), Handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     return httpd
+
+
+def settle_highlight(page, name, tries=400, expect_moved=True):
+    """Wait for the dim/focus sweep to finish, and prove it actually ran.
+
+    A filter is deliberately a wave — the nearest tiles change first and it spreads —
+    so for the first frames the mean barely moves and any "has it stopped" test says
+    yes before it has started. Waiting on the sweep's own `settled` flag avoids
+    guessing: it is false from the moment something invalidates it and true only once
+    a whole pass changed nothing.
+
+    The assertion afterwards matters as much as the wait. These two scenes exist to
+    execute lanes nothing else touches, so a scene that captured with dim still at 1
+    and focus still at 0 would record a duplicate of grid-front and quietly claim
+    coverage it does not have.
+    """
+    for _ in range(tries):
+        h = page.evaluate("() => { const h = window.__atlas.highlight;"
+                          "        return h && h.settled; }")
+        if h:
+            break
+        page.wait_for_timeout(25)
+    lanes = page.evaluate("""() => {
+      const m = window.__atlas.mesh.geometry.getAttribute('aMeta');
+      let dim = 0, focus = 0;
+      for (let i = 0; i < m.count; i++) { dim += m.array[i*4+1]; focus += m.array[i*4+2]; }
+      return { dimMean: dim / m.count, focusMax: focus };
+    }""")
+    if expect_moved and lanes["dimMean"] > 0.999 and lanes["focusMax"] < 1e-4:
+        sys.exit(f"scene {name}: neither lane moved — dim {lanes['dimMean']:.4f}, "
+                 f"focus {lanes['focusMax']:.4f}. This scene exists to exercise them.")
+    print(f"  {name}: dim mean {lanes['dimMean']:.4f}, focus total {lanes['focusMax']:.4f}")
+
+
+def assert_all_lit(page, name, tries=400):
+    """After a filter is cleared, every tile must come back.
+
+    This is the shape of a bug that was in the sweep from the beginning: the tile
+    furthest from the view centre gets a delay of exactly `stagger`, `delay` is a
+    Float32Array, and 0.30 stored as float32 is 0.30000001192 — larger than the float64
+    0.30 the timer stops at. That tile never satisfies `t >= delay[i]`, so its target
+    holds, nothing reports as touched, the sweep latches settled, and it stays dark
+    until something else invalidates.
+
+    One tile in 2,936 moves no luma cell past a tolerance of 3, so no signature was ever
+    going to catch it. A post-condition does, and cheaply.
+    """
+    for _ in range(tries):
+        if page.evaluate("() => { const h = window.__atlas.highlight; return h && h.settled; }"):
+            break
+        page.wait_for_timeout(25)
+    # Two checks, because neither alone is enough. The invariant below is the one the
+    # fix establishes: every delay strictly under the value the timer is guaranteed to
+    # reach. Unclamped it holds only by luck — whether float32 rounding puts the
+    # furthest tile's delay above or below `stagger` depends on that run's distances —
+    # so this catches a violation whenever one exists rather than every run. The dark
+    # tile check below catches the symptom on the runs where it does bite. Together
+    # they are a good deal more than the pixels, which cannot see one tile in 2,936 at
+    # all.
+    inv = page.evaluate("""() => {
+      const h = window.__atlas.highlight;
+      if (!h.delay) return null;
+      let max = 0;
+      for (let i = 0; i < h.delay.length; i++) if (h.delay[i] > max) max = h.delay[i];
+      return { maxDelay: max, stagger: h.stagger, t: h.t };
+    }""")
+    if inv and inv["maxDelay"] >= inv["stagger"]:
+        sys.exit(f"scene {name}: a stagger delay reaches {inv['maxDelay']!r}, which is not "
+                 f"below stagger {inv['stagger']!r}. The timer stops at the first t >= "
+                 f"stagger, so that tile can never satisfy t >= delay and will strand "
+                 f"dark. Clamp the delays.")
+
+    dark = page.evaluate("""() => {
+      const m = window.__atlas.mesh.geometry.getAttribute('aMeta');
+      const out = [];
+      for (let i = 0; i < m.count; i++) if (m.array[i*4+1] < 0.5) out.push(i);
+      return { count: out.length, first: out.slice(0, 5) };
+    }""")
+    if dark["count"]:
+        sys.exit(f"scene {name}: {dark['count']} tile(s) still dark after the filter was "
+                 f"cleared, e.g. {dark['first']} — the sweep stranded them")
+    print(f"  {name}: all tiles lit after clearing")
 
 
 def settle_detail(page, tries=80, quiet=3):
@@ -239,7 +339,10 @@ def capture(backend, scenes, timeout_s=90):
             sys.exit("WebGPU resolved to SwiftShader, a software adapter — refusing to "
                      "use the frame. This means Chrome found no usable GPU.")
 
-        for name, mode, (x, y, z), steps in scenes:
+        for name, mode, (x, y, z), steps, setup in scenes:
+            # Highlight state is global and outlives a scene, so reset before each one.
+            # Without this the filtered scene dims everything the scenes after it draw.
+            page.evaluate("() => window.__atlas.clearHighlight()")
             if steps is None:
                 page.evaluate("([m]) => window.__atlas.setLayout(m, true)", [mode])
                 page.wait_for_function("() => window.__atlas.settled",
@@ -257,6 +360,18 @@ def capture(backend, scenes, timeout_s=90):
                              "reproducible and the baseline would be noise")
                 print(f"  {name}: {res['bodies']} bodies, {res['steps']} steps")
             page.evaluate("([x,y,z]) => window.__atlas.park(x,y,z)", [x, y, z])
+
+            if setup:
+                if "filter" in setup:
+                    shown = page.evaluate("([q]) => window.__atlas.setFilter(q)",
+                                          [setup["filter"]])
+                    print(f"  {name}: filter {setup['filter']!r} -> {shown}")
+                if "hover" in setup:
+                    page.evaluate("([i]) => window.__atlas.hover(i)", [setup["hover"]])
+                settle_highlight(page, name, expect_moved="clear" not in setup)
+                if setup.get("clear"):
+                    page.evaluate("() => window.__atlas.clearHighlight()")
+                    assert_all_lit(page, name)
 
             d = settle_detail(page)
             if steps is None and mode == "grid" and name.startswith("detail"):
