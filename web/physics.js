@@ -133,7 +133,17 @@ export class PhysicsWorld {
       let heard = 0;
       events.drainContactForceEvents((e) => {
         if (heard++ > 4) return;                       // the voice cap does the rest
-        audio.impact(Math.min(1, e.totalForceMagnitude() / IMPACT_SCALE));
+        // Where the knock happened, so it arrives from that side of the pile. The
+        // collider's own translation is close enough — the contact point is within
+        // half a tile of it, and half a tile is nothing at these distances.
+        let at = null;
+        if (world.getCollider) {
+          const c = world.getCollider(e.collider1());
+          if (c) at = c.translation();
+        }
+        const mag = Math.min(1, e.totalForceMagnitude() / IMPACT_SCALE);
+        if (at) audio.impact(mag, at.x, at.y, at.z);
+        else audio.impact(mag);
       });
     } else {
       events.drainContactForceEvents(() => {});        // must drain or it grows
