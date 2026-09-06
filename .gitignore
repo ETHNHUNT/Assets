@@ -20,3 +20,6 @@ data/README_stats.md
 /api_feeds.json
 /barren_audit.json
 /*.log
+
+# macOS writes these into any directory opened in Finder.
+.DS_Store
