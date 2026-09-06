@@ -390,6 +390,21 @@ It has to be served over HTTP. Opening `web/index.html` from disk fails twice ov
 | **Helix** | a spiral column you can fly down |
 | **By model** | the twelve largest models as labelled blocks, the tail rolled into one — small multiples, so block sizes compare directly |
 
+**A hovered video plays where it sits.** Rest on a video tile and after a short pause it
+starts, the way a preview does in a streaming catalogue — silent, unless the sound toggle
+is on, because a browser will not give audio to anything but a gesture and turning that
+toggle on is one. Move away and it stops and drops its buffer.
+
+It is a positioned element tracking the tile rather than a texture on it, and not by
+preference. The CDN answers any cross-origin request with `403 CORS Origin not allowed`,
+so the file loads into a media element quite happily but taints whatever canvas it is drawn
+into — and a tainted canvas cannot be uploaded as a GPU texture. Playing it over the tile
+is what remains.
+
+One at a time, and only after ~420 ms. Each file is about 3.5 MB, so arming one per tile a
+pointer crosses would pull tens of megabytes of previews nobody asked to watch. The delay
+is what separates *looking at this* from *passing over it*.
+
 **The chrome is built on a token scale.** Eleven font sizes and seven corner radii had
 accumulated, which is what makes an interface look assembled rather than designed; there
 are now five of each and nothing uses a value that is not named. One accent carries every
@@ -734,6 +749,7 @@ tolerance, and they hold anywhere the code runs:
 | detail panel | 12 selections must leave **one** history entry, and each must show the record it was asked for |
 | sort | ordering by length is monotonic across the laid-out sequence, and actually moves tiles |
 | keyboard | the canvas is focusable and named, the cursor walks the laid-out order, clamps at the ends, and releases when a filter excludes it |
+| preview | a hovered video arms after the delay and stays muted while sound is off; a still does not arm; leaving releases it |
 | compare | two or more records switch the rail, every one is shown, the cap of six holds, and opening a record clears it |
 | url | a view driven in one page reopens identically in a fresh one, from the link alone |
 | detail nav | stepping follows the laid-out order, clamps at both ends, and counts within the filter |

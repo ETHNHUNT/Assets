@@ -371,6 +371,16 @@ async function boot() {
       },
       get settled() { return morphCtl.settled; },
       get physicsWorld() { return physics; },
+      /**
+       * Resolves once the solver is up and has taken its targets.
+       *
+       * Boot starts it without awaiting — first paint should not wait on 3 MB of
+       * wasm — which means it finishes at an unpredictable moment and then teleports
+       * every body and re-points the springs. Landing mid-capture, that perturbs
+       * whatever scene was being photographed. A test waits for it once, up front,
+       * and then nothing moves underneath it.
+       */
+      whenPhysicsReady() { return startPhysics(); },
       get highlight() { return highlight; },
 
       /**
@@ -417,6 +427,14 @@ async function boot() {
       step(delta) { stepDetail(delta); return $('#dpos').textContent; },
       /** Build a comparison the way a shift-click does. */
       compare(ids) { clearCompare(); for (const i of ids) toggleCompare(i); return this.comparison; },
+      /** Drive a preview without a pointer, and see what it is doing. */
+      preview(i) { stopPreview(); if (i >= 0) startPreview(i); return this.previewState; },
+      get previewState() {
+        const v = $('#preview');
+        return { forRecord: previewFor, src: v.getAttribute('src'),
+                 muted: v.muted, visible: v.classList.contains('on'),
+                 display: v.style.display };
+      },
       get comparison() {
         return { ids: [...compareSet], shown: $('#dcompare').hidden ? 0 : $('#dcompare').children.length,
                  singleHidden: $('#dsingle').hidden, name: $('#dname').textContent };
@@ -430,9 +448,25 @@ async function boot() {
                  prevDisabled: $('#dprev').disabled, nextDisabled: $('#dnext').disabled };
       },
       wordCounts(ids) { return ids.map((i) => DATA.records[i].w || 0); },
+      recordKind(i) { return DATA.records[i].k; },
       hover(i) { hovered = i; highlight.invalidate(); },
-      clearHighlight() { hovered = -1; selected = -1; sortBy = '';
-        $('#q').value = ''; applyFilters(); },
+      /**
+       * Put everything back: no hover, no selection, no sort, no filters.
+       *
+       * It cleared the search box and left the four selects alone, which meant a check
+       * that isolated a model handed that model to every check after it — they were
+       * running against 33 records and reporting as though they had the corpus. A
+       * "clear" that leaves state behind is worse than none, because the next caller
+       * believes it.
+       */
+      clearHighlight() {
+        hovered = -1; selected = -1; kbAt = -1; sortBy = '';
+        $('#q').value = '';
+        $('#f-tool').value = ''; $('#f-model').value = '';
+        $('#f-style').value = ''; $('#f-kind').value = '';
+        $('#f-sort').value = '';
+        applyFilters();
+      },
 
       /**
        * Open and close the detail panel the way a click and Escape do.
@@ -1121,6 +1155,8 @@ function pick() {
   if (id === hovered) return;
   hovered = id;
   highlight.invalidate();
+  if (id < 0 || previewFor !== id) stopPreview();
+  if (id >= 0) startPreview(id);
   const tip = $('#tip');
   if (id < 0) {
     tip.classList.remove('on');
@@ -1183,7 +1219,10 @@ function selectIndex(i) {
   const r = DATA.records[i];
   $('#dname').textContent = r.n || r.t || 'Prompt';
   $('#dsub').textContent = [r.m || 'no model', r.k].filter(Boolean).join(' · ');
-  $('#dimg').src = `../assets/${r.th}`;
+  const im = $('#dimg');
+  im.style.display = '';
+  im.onerror = () => { im.style.display = 'none'; };   // never leave a silent gap
+  im.src = `../assets/${r.th}`;
   $('#dprompt').innerHTML = r.p ? markTokens(r.p)
     : '<em style="color:var(--faint)">This preset publishes no prompt text.</em>';
   $('#dcopy').style.display = r.p ? '' : 'none';
@@ -1384,6 +1423,77 @@ function cursorStride() {
   const n = activeList().length || 1;
   return Math.max(1, Math.round(Math.sqrt(n * viewAspect(1.9))));
 }
+
+/* ------------------------------------------------------------ video preview ---
+ * A hovered video plays where it sits, the way a preview does in a streaming
+ * catalogue: nothing moves until you rest on something, and then that one thing
+ * comes alive.
+ *
+ * It is a positioned element rather than a texture, and not by preference. The CDN
+ * answers any cross-origin request with 403, so the file will load into a media
+ * element but taints whatever canvas it is drawn into, and a tainted canvas cannot
+ * be uploaded as a GPU texture. Playing it over the tile is what is left.
+ *
+ * One at a time, and only after a pause. Each file is about 3.5 MB, so starting one
+ * per tile the pointer crosses would pull tens of megabytes for previews nobody
+ * asked to watch. The delay is what separates "looking at this" from "passing over
+ * it", and it is the same reason a streaming catalogue waits before it starts.
+ */
+const PREVIEW_DELAY = 420;
+let previewFor = -1, previewTimer = 0;
+
+function stopPreview() {
+  clearTimeout(previewTimer);
+  previewFor = -1;
+  const v = $('#preview');
+  v.classList.remove('on');
+  v.pause();
+  v.removeAttribute('src');
+  v.load();                                   // drops the buffer, not just the frame
+  v.style.display = 'none';
+}
+
+function startPreview(i) {
+  const r = DATA.records[i];
+  if (!r || r.k !== 'video' || !r.f) return;
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(() => {
+    const v = $('#preview');
+    previewFor = i;
+    // Muted unless sound is on. Autoplay policy refuses audio without a gesture, and
+    // the sound toggle is one — so turning it on is what earns a preview its voice.
+    v.muted = !audio.on;
+    v.volume = 0.85;
+    v.src = r.f;
+    v.style.display = 'block';
+    placePreview();
+    v.play().then(() => v.classList.add('on')).catch(() => stopPreview());
+  }, PREVIEW_DELAY);
+}
+
+/**
+ * Follow the tile. The camera keeps moving under a hover — a flight, a drift, a
+ * re-layout — and a preview pinned to where the tile used to be is worse than none.
+ */
+function placePreview() {
+  if (previewFor < 0) return;
+  const v = $('#preview');
+  const a = previewFor * 3;
+  _pv.set(posCur[a], posCur[a + 1], posCur[a + 2]);
+  const dist = camera.position.distanceTo(_pv);
+  _pv.project(camera);
+  if (_pv.z > 1) { v.classList.remove('on'); return; }   // behind the camera
+  // A tile is one world unit across; its drawn size follows the same focal maths the
+  // detail cache uses to decide whether a tile is worth a full-res image.
+  const focal = (innerHeight * 0.5) / Math.tan((camera.fov * Math.PI / 180) * 0.5);
+  const px = Math.max(24, (focal / Math.max(dist, 0.001)) * highlight.halfSize(previewFor) * 2);
+  v.style.width = px + 'px';
+  v.style.height = px + 'px';
+  v.style.left = ((_pv.x * 0.5 + 0.5) * innerWidth - px / 2) + 'px';
+  v.style.top = ((-_pv.y * 0.5 + 0.5) * innerHeight - px / 2) + 'px';
+  v.classList.add('on');
+}
+const _pv = new THREE.Vector3();
 
 function closeDetail(fromPop) {
   selected = -1;
@@ -1660,6 +1770,7 @@ function tick() {
   // re-elect cache holders a few times a second; walking every record and
   // re-uploading the cache texture is not worth doing per frame
   if (detail) detail.tick(dt, camera, posCur, active, morphCtl.value >= 1);
+  if (previewFor >= 0) placePreview();
 
   flight.apply();
 
