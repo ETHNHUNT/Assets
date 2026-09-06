@@ -184,6 +184,7 @@ kbd{background:#141822;border:1px solid var(--line);border-radius:4px;padding:0 
   <span id="count"></span>
   <button class="tgl off" id="sound" title="Sound off" aria-pressed="false">◍ sound</button>
   <button class="tgl" id="bloom" title="Bloom on" aria-pressed="true">✦ bloom</button>
+  <a class="tgl" href="prompts/index.html" title="Every prompt as plain text">text</a>
   <span class="badge" id="backend">detecting</span>
 </div>
 
@@ -220,6 +221,13 @@ kbd{background:#141822;border:1px solid var(--line);border-radius:4px;padding:0 
 <div id="tip"></div>
 
 <p id="say" class="sr" aria-live="polite" role="status"></p>
+<noscript>
+  <p style="position:fixed;inset:0;display:grid;place-items:center;text-align:center;
+            padding:24px;z-index:99">
+    The atlas needs WebGL. Every prompt is also published as
+    <a href="prompts/index.html">plain text</a>.
+  </p>
+</noscript>
 <aside id="detail">
   <div class="dhead">
     <h2 id="dname"></h2>
