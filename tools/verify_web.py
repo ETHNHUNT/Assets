@@ -13,10 +13,21 @@ Signatures are a 16x16 grid of mean luma, not raw pixels: a software rasteriser 
 real GPU disagree in the low bits of every antialiased edge, but they agree on where
 the tiles are. A tile that moves shifts the grid; a recompiled shader does not.
 
-Measured on this workload: repeat runs on one machine differ by 0, and nudging the grid
-pitch by 1.3% reads 14. So the baseline is sensitive to what it needs to be sensitive to
-— but it is specific to a backend and a machine. Re-capture after changing browser,
-driver or backend; never widen the tolerance to silence a diff you have not explained.
+Measured on this workload, per scene kind — noise is repeat runs against an unchanged
+baseline, signal is a deliberate ~1% perturbation of that scene's own code:
+
+    scene kind   noise   signal
+    layout         0     14   grid pitch 1.5 -> 1.52
+    physics       0-1     7   linear damping 0.16 -> 0.1618
+    detail        0-1    12   centre-crop offset /2 -> /2.4
+
+A tolerance of 3 sits above every noise floor and well under every signal, which is what
+makes it worth keeping tight. The layout scenes are exactly reproducible; physics and the
+detail cache carry a little float and decode noise, so they are not, and a tolerance of 0
+would be unusable. Never widen it to silence a diff you have not explained.
+
+Baselines are specific to a backend and a machine — re-capture after changing browser,
+driver or backend.
 
 The browser always launches headed: headless Chrome has no surface to present to, so it
 hands back SwiftShader and a software frame that is not what you meant to test. On macOS
@@ -78,17 +89,31 @@ CHROME_FLAGS = [
 # Chrome for Vulkan there points it at a driver the machine does not have.
 LINUX_VULKAN_FLAGS = ["--enable-features=Vulkan", "--disable-vulkan-surface"]
 
-# Each scene is (name, layout mode, camera position). The camera is parked explicitly
-# because OrbitControls damping never quite settles, and a drifting camera would make
-# every signature differ from the last.
+# Each scene is (name, layout mode, camera position, physics steps). The camera is
+# parked explicitly because OrbitControls damping never quite settles, and a drifting
+# camera would make every signature differ from the last.
+#
+# A scene with a step count is a physics scene, and is captured differently: a layout
+# settles and then holds still, so it can be waited on, but a pile never settles. What
+# is reproducible about it is "exactly N steps from a seeded start", so the page is
+# asked to run those steps synchronously rather than waited on.
 SCENES = [
-    ("grid-front",   "grid",     (0, 0, 96)),
-    ("grid-angled",  "grid",     (60, 34, 70)),
-    ("sphere",       "sphere",   (0, 10, 120)),
-    ("helix",        "helix",    (0, 0, 130)),
-    ("towers",       "towers",   (0, 20, 150)),
-    ("by-model",     "model",    (0, 20, 150)),
+    ("grid-front",   "grid",     (0, 0, 96),    None),
+    ("grid-angled",  "grid",     (60, 34, 70),  None),
+    ("sphere",       "sphere",   (0, 10, 120),  None),
+    ("helix",        "helix",    (0, 0, 130),   None),
+    ("towers",       "towers",   (0, 20, 150),  None),
+    ("by-model",     "model",    (0, 20, 150),  None),
+    ("physics-pile", "physics",  (0, 6, 120),   240),
+    # Close enough to trip the detail cache. A tile has to cover DETAIL_MIN_PX (74px)
+    # before it is worth a full-res load, which works out at roughly 8 units — every
+    # other scene here sits at 96 or further, so without this one the LOD path, and the
+    # aToPos.w / aMeta writes it owns, are never executed at all.
+    ("detail-closeup", "grid",   (0, 0, 7),     None),
 ]
+
+# Any fixed value works; it only has to be the same one the baseline was captured with.
+SEED = 1
 
 
 def free_port():
@@ -111,6 +136,37 @@ def serve(port):
     return httpd
 
 
+def settle_detail(page, tries=80, quiet=3):
+    """Drive the detail cache to a steady state before the frame is read.
+
+    "Nothing in flight" is not the same as "finished". The loader holds itself to 8
+    concurrent requests and takes the rest on later elections, so it falls quiet
+    between batches with most slots still empty — and a capture taken in one of those
+    gaps records however many tiles happened to have landed. That is what made the
+    close-up read a constant 3 against its own baseline: not noise, just two runs
+    stopping at different points up the same ramp.
+
+    So wait for the bound count to stop moving rather than for the queue to empty, and
+    re-elect each time round, since election is what starts the next batch. A scene too
+    far away to elect anything settles at zero on the first pass.
+    """
+    prev, stable = None, 0
+    for _ in range(tries):
+        page.evaluate("() => window.__atlas.forceDetail()")
+        page.wait_for_timeout(150)
+        d = page.evaluate("() => window.__atlas.detail")
+        if d is None:                       # ?lod=off — nothing to settle
+            return None
+        if d["inFlight"] == 0 and d["bound"] == prev:
+            stable += 1
+            if stable >= quiet:
+                return d
+        else:
+            stable = 0
+        prev = d["bound"]
+    return d
+
+
 def capture(backend, scenes, timeout_s=90):
     from playwright.sync_api import sync_playwright
 
@@ -126,7 +182,11 @@ def capture(backend, scenes, timeout_s=90):
             print("  mesa-vulkan-drivers not installed — falling back to the WebGL2 backend")
             backend = "webgl"
 
-    flags = "dust=0&audio=0&physics=0"
+    # physics is deliberately NOT disabled here. FLAGS.physics gates only startPhysics(),
+    # so a scene that never enters physics renders identically either way — and the
+    # physics scene needs the engine available. The seed is what makes that pile
+    # comparable at all.
+    flags = f"dust=0&audio=0&seed={SEED}"
     if backend == "webgl":
         flags += "&webgl"
     url = f"http://127.0.0.1:{port}/web/?{flags}"
@@ -179,10 +239,32 @@ def capture(backend, scenes, timeout_s=90):
             sys.exit("WebGPU resolved to SwiftShader, a software adapter — refusing to "
                      "use the frame. This means Chrome found no usable GPU.")
 
-        for name, mode, (x, y, z) in scenes:
-            page.evaluate("([m]) => window.__atlas.setLayout(m, true)", [mode])
-            page.wait_for_function("() => window.__atlas.settled", timeout=timeout_s * 1000)
+        for name, mode, (x, y, z), steps in scenes:
+            if steps is None:
+                page.evaluate("([m]) => window.__atlas.setLayout(m, true)", [mode])
+                page.wait_for_function("() => window.__atlas.settled",
+                                       timeout=timeout_s * 1000)
+            else:
+                # Loads a ~3 MB wasm bundle on first use, so give it the full timeout.
+                res = page.evaluate("async ([n]) => await window.__atlas.physics(n)",
+                                    [steps])
+                if not res:
+                    browser.close(); httpd.shutdown()
+                    sys.exit(f"scene {name}: physics refused to start")
+                if not res["seeded"]:
+                    browser.close(); httpd.shutdown()
+                    sys.exit(f"scene {name}: physics ran unseeded — the pile is not "
+                             "reproducible and the baseline would be noise")
+                print(f"  {name}: {res['bodies']} bodies, {res['steps']} steps")
             page.evaluate("([x,y,z]) => window.__atlas.park(x,y,z)", [x, y, z])
+
+            d = settle_detail(page)
+            if steps is None and mode == "grid" and name.startswith("detail"):
+                if not d or d["bound"] == 0:
+                    browser.close(); httpd.shutdown()
+                    sys.exit(f"scene {name}: the detail cache bound nothing — this scene "
+                             "exists to exercise the LOD path and did not")
+                print(f"  {name}: {d['bound']}/{d['slots']} detail tiles bound")
             page.wait_for_timeout(250)          # let one frame with the new camera land
             out[name] = page.evaluate("async () => await window.__atlas.signature(512, 16)")
         browser.close()

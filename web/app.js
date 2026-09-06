@@ -35,8 +35,14 @@ import { AtlasAudio } from './audio.js';
  *   ?audio=0    no procedural sound, and no audio context at all
  *   ?physics=0  physics mode refuses to start
  *
- * tools/verify_web.py drives the page with dust, audio and physics off so a
- * frame is reproducible; nothing else depends on them.
+ * The one exception to "only subtracts" is ?seed=<int>, which subtracts something
+ * else — randomness. Physics seeds every body's spin with Math.random(), so the
+ * pile settles differently every run and cannot be compared against a baseline.
+ * With a seed, each startPhysics() draws from a fresh stream of that seed, so the
+ * same seed gives the same pile no matter what else has consumed randomness first.
+ *
+ * tools/verify_web.py drives the page with dust and audio off so a frame is
+ * reproducible, and with a seed so the physics pile is too.
  */
 const PARAMS = new URLSearchParams(location.search);
 const off = (k) => { const v = PARAMS.get(k); return v === '0' || v === 'off' || v === 'false'; };
@@ -47,7 +53,23 @@ const FLAGS = {
   bloom: !off('bloom'),
   audio: !off('audio'),
   physics: !off('physics'),
+  seed: PARAMS.has('seed') ? (parseInt(PARAMS.get('seed'), 10) | 0) : null,
 };
+
+/**
+ * mulberry32 — 32 bits of state, no dependencies, and good enough for jitter whose
+ * only requirement is that it repeat. Not for anything that needs to be unguessable.
+ */
+function mulberry32(a) {
+  return () => {
+    a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+/** A fresh stream, so a caller's sequence does not depend on who drew before it. */
+const stream = () => FLAGS.seed === null ? Math.random : mulberry32(FLAGS.seed);
 
 // ---------------------------------------------------------------- boot ------
 const $ = (s) => document.querySelector(s);
@@ -233,6 +255,28 @@ async function boot() {
 
       /** Drive a layout from a test without going through the DOM. */
       setLayout(m, instant = true) { layout(m, instant); },
+
+      /**
+       * Enter physics and advance it a fixed number of steps, synchronously.
+       *
+       * The pile cannot be captured the way a layout is. A layout settles and then
+       * holds still, so a test can wait for `settled`; physics never settles, so the
+       * only stable thing to compare is "exactly N steps from a known start". Driving
+       * the steps here rather than letting tick() do it also takes rAF out of the
+       * loop, which a background tab throttles to nothing.
+       *
+       * Reproducible only under ?seed — without one the spins are Math.random().
+       */
+      async physics(steps = 240, from = 'grid') {
+        // Physics mode seeds itself from wherever the tiles currently are, so without
+        // a known starting layout the pile would depend on which scene ran before it.
+        layout(from, true);
+        layout('physics', true);
+        await startPhysics();
+        if (!physReady) return null;
+        for (let k = 0; k < steps; k++) stepPhysics();
+        return { bodies: bodies.size, steps, seeded: FLAGS.seed !== null };
+      },
       /** Place the camera deterministically — OrbitControls damping never settles on its own. */
       park(x, y, z) {
         camera.position.set(x, y, z);
@@ -561,11 +605,11 @@ function tileMaterial() {
 }
 
 function addDust() {
-  const n = 2600, p = new Float32Array(n * 3);
+  const n = 2600, p = new Float32Array(n * 3), dr = stream();
   for (let i = 0; i < n; i++) {
-    p[i * 3] = (Math.random() - 0.5) * 700;
-    p[i * 3 + 1] = (Math.random() - 0.5) * 400;
-    p[i * 3 + 2] = (Math.random() - 0.5) * 700;
+    p[i * 3] = (dr() - 0.5) * 700;
+    p[i * 3 + 1] = (dr() - 0.5) * 400;
+    p[i * 3 + 2] = (dr() - 0.5) * 700;
   }
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.BufferAttribute(p, 3));
@@ -1063,6 +1107,9 @@ async function startPhysics() {
   }
 
   bodies = new Map();
+  // A fresh stream per start: the same seed rebuilds the same pile, whatever else
+  // has drawn from Math.random() in between.
+  const rnd = stream();
   for (const i of list) {
     const a = i * 3;
     const rb = world.createRigidBody(
@@ -1073,7 +1120,7 @@ async function startPhysics() {
       .setActiveEvents(RAPIER.ActiveEvents.CONTACT_FORCE_EVENTS)
       .setContactForceEventThreshold(CONTACT_THRESHOLD);
     world.createCollider(col, rb);
-    rb.setAngvel({ x: (Math.random() - .5) * 2, y: (Math.random() - .5) * 2, z: (Math.random() - .5) * 2 }, true);
+    rb.setAngvel({ x: (rnd() - .5) * 2, y: (rnd() - .5) * 2, z: (rnd() - .5) * 2 }, true);
     bodies.set(i, rb);
   }
   physReady = true;

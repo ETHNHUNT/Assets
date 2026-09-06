@@ -566,8 +566,13 @@ testable and what a bug report should narrow with before it is filed:
 | `?bloom=0` | no bloom, and the toggle cannot turn it back on |
 | `?audio=0` | silent, and no audio context is created |
 | `?physics=0` | physics mode refuses to start |
+| `?seed=<int>` | seed the randomness instead of leaving it to `Math.random()` |
 
-They only ever subtract, so the bare URL is always the full experience.
+The first six only ever subtract, so the bare URL is always the full experience. `?seed`
+subtracts something else — nondeterminism. Physics spins every body randomly and the dust
+is randomly placed, neither of which can be compared against a baseline; with a seed, each
+`startPhysics()` and each `addDust()` draws a fresh stream from it, so the same seed gives
+the same result no matter what else consumed randomness first.
 
 ### Verifying it visually
 
@@ -575,15 +580,47 @@ They only ever subtract, so the bare URL is always the full experience.
 against a committed baseline, so a refactor can prove it changed nothing:
 
 ```bash
-pip install playwright                       # browser already present; do NOT run `playwright install`
+pip install playwright                       # or: pip install -r requirements.txt
+playwright install chromium                  # skip ONLY where a full Chromium is already pinned
 python3 tools/verify_web.py --update         # capture the baseline BEFORE changing anything
 python3 tools/verify_web.py                  # check against it
 ```
 
 What it compares is a **16×16 grid of mean luma**, not raw pixels — a software rasteriser
 and a real GPU disagree in the low bits of every antialiased edge, but they agree on where
-the tiles are. Measured on this workload: repeat runs on one machine differ by **0**, and
-nudging the grid pitch by 1.3% reads **14**. The default tolerance is 3.
+the tiles are.
+
+Eight scenes, chosen so that every system that writes the per-instance buffers is on screen
+in at least one of them:
+
+| Scene | Covers |
+|---|---|
+| `grid-front`, `grid-angled`, `sphere`, `helix`, `towers`, `by-model` | layout and morph |
+| `physics-pile` | `PhysicsWorld` — 2,936 rigid bodies, 240 seeded steps |
+| `detail-closeup` | the LOD cache — 64/64 full-res tiles bound |
+
+The last two are not optional extras. Physics and the detail cache are the other writers of
+`aToPos` and `aMeta`, so a baseline without them would pass a refactor that broke either.
+
+Calibration, measured per scene kind — noise is repeat runs against an unchanged baseline,
+signal is a deliberate ~1% perturbation of that scene's own code:
+
+| Scene kind | Noise | Signal | Perturbation |
+|---|---|---|---|
+| layout | **0** | **14** | grid pitch 1.5 → 1.52 |
+| physics | **0–1** | **7** | linear damping 0.16 → 0.1618 |
+| detail | **0–1** | **12** | centre-crop offset `/2` → `/2.4` |
+
+The default tolerance of **3** sits above every noise floor and well below every signal.
+Layout scenes reproduce exactly; physics and the detail cache carry a little float and
+decode noise, so a tolerance of 0 would be unusable.
+
+Two things the physics scene needs in order to be comparable at all. `?seed=<int>` replaces
+the `Math.random()` spin given to each body, and each `startPhysics()` draws a fresh stream
+from it, so the same seed rebuilds the same pile whatever else drew first. And the steps are
+driven synchronously by `__atlas.physics(n)` rather than by frames: a layout settles and can
+be waited on, but a pile never does, so what is reproducible about it is *exactly N steps
+from a seeded start*.
 
 A baseline is specific to one backend and one machine, so each keeps its own file —
 `web/docs/baseline.<backend>[.<tag>].json`. Signatures from llvmpipe in a container and
