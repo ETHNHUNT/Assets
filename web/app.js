@@ -370,6 +370,29 @@ async function boot() {
       setFilter(q) { $('#q').value = q; applyFilters(); return $('#count').textContent; },
       hover(i) { hovered = i; highlight.invalidate(); },
       clearHighlight() { hovered = -1; selected = -1; $('#q').value = ''; applyFilters(); },
+
+      /**
+       * Open and close the detail panel the way a click and Escape do.
+       *
+       * The panel carries an invariant a test can hold it to and a reader cannot see:
+       * selecting forty records in a row must leave one history entry, not forty,
+       * because Back is how the panel is dismissed on a phone and stepping back
+       * through the whole session is not what anyone means by that.
+       */
+      select(i) { selectIndex(i); },
+      closePanel() { closeDetail(); },
+      get panel() {
+        return {
+          open: $('#detail').classList.contains('open'),
+          selected,
+          name: $('#dname').textContent,
+          prompt: $('#dprompt').textContent,
+          rid: $('#drid').textContent,
+          tags: $('#dtags').children.length,
+          copyShown: $('#dcopy').style.display !== 'none',
+          hash: location.hash,
+        };
+      },
       get flags() { return { ...FLAGS }; },
       get counts() { return { instances: N, active: active.reduce((a, v) => a + v, 0) }; },
     };
