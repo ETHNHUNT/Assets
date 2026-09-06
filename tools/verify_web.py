@@ -197,12 +197,34 @@ def check_audio(page, bursts=500):
         out.whileOff = sources + oscs;
 
         // the cap, with one window forced open
+        let panners = 0;
+        const realPan = ctx.createPanner.bind(ctx);
+        ctx.createPanner = () => { panners++; return realPan(); };
+
         a.on = true;
         sources = 0; oscs = 0;
         a.impactWindow = 0; a.impacts = 0;
         for (let k = 0; k < bursts; k++) a.impact(0.6);
         out.capped = sources;
+        out.pannersWhenMono = panners;          // no position given: none expected
+
+        // the same burst, positioned
+        panners = 0; sources = 0;
+        a.impactWindow = 0; a.impacts = 0;
+        for (let k = 0; k < bursts; k++) a.impact(0.6, 40, 0, -10);
+        out.cappedSpatial = sources;
+        out.pannersWhenSpatial = panners;
+
+        // the listener has to follow the camera, or the soundstage is nailed to
+        // wherever the page happened to start
+        const L = ctx.listener;
+        const readL = () => L.positionX ? [L.positionX.value, L.positionY.value, L.positionZ.value]
+                                        : null;
+        a.setListener(11, 22, 33, 0, 0, -1, 0, 1, 0);
+        out.listener = readL();
+
         a.on = false;
+        ctx.createPanner = realPan;
 
         ctx.createBufferSource = realSrc;
         ctx.createOscillator = realOsc;
@@ -224,8 +246,22 @@ def check_audio(page, bursts=500):
     if res["capped"] < 1:
         sys.exit(f"audio: {bursts} impacts built nothing at all, so the cap proved "
                  f"nothing. Sound was off, or impact() no longer reaches the graph.")
-    print(f"  audio: graph builds, silent under ?audio=0, "
-          f"{bursts} impacts capped to {res['capped']} voices")
+    if res["cappedSpatial"] > 5 or res["cappedSpatial"] < 1:
+        sys.exit(f"audio: positioned impacts built {res['cappedSpatial']} sources; the "
+                 f"cap must hold whether or not a position is given")
+    if res["pannersWhenMono"]:
+        sys.exit(f"audio: {res['pannersWhenMono']} panner(s) built for impacts with no "
+                 f"position — an unpositioned sound should stay on the direct path")
+    if res["pannersWhenSpatial"] != res["cappedSpatial"]:
+        sys.exit(f"audio: {res['cappedSpatial']} positioned voices produced "
+                 f"{res['pannersWhenSpatial']} panners — every positioned sound needs "
+                 f"exactly one, or it plays from the middle regardless of where it was")
+    if res["listener"] and [round(v) for v in res["listener"]] != [11, 22, 33]:
+        sys.exit(f"audio: the listener did not move to where it was put "
+                 f"({res['listener']}) — the soundstage will not follow the camera")
+    print(f"  audio: graph builds, silent under ?audio=0, {bursts} impacts capped to "
+          f"{res['capped']} voices ({res['pannersWhenSpatial']} panned when positioned, "
+          f"{res['pannersWhenMono']} when not), listener follows")
 
 
 def check_detail_panel(page, runs=12):

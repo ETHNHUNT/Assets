@@ -870,7 +870,7 @@ function pick() {
   const tip = $('#tip');
   if (id < 0) { tip.classList.remove('on'); document.body.style.cursor = ''; return; }
   const r = DATA.records[id];
-  audio.hover(r);
+  audio.hover(r, posCur[id * 3], posCur[id * 3 + 1], posCur[id * 3 + 2]);
   tip.innerHTML = `<b>${esc(r.n || r.t || 'Prompt')}</b>
     <i>${esc(r.m || 'no model')} · ${r.w} words · ${esc(r.k || '')}</i>`;
   tip.classList.add('on');
@@ -959,6 +959,7 @@ function frameCamera(preferDir) {
 
 let flight = null;                       // CameraFlight; see web/camera.js
 let physFrameTimer = 0;
+const _fwd = new THREE.Vector3();   // scratch for the audio listener's facing
 
 
 let pushedDetail = false;
@@ -1201,6 +1202,12 @@ function tick() {
     });
   }
   if (audio.on) {
+    // Keep the ear on the camera. Cheap, and it has to happen every frame or the
+    // soundstage lags a flight.
+    camera.getWorldDirection(_fwd);
+    audio.setListener(camera.position.x, camera.position.y, camera.position.z,
+                      _fwd.x, _fwd.y, _fwd.z,
+                      camera.up.x, camera.up.y, camera.up.z);
     const d = camera.position.distanceTo(_camPrev);
     _camPrev.copy(camera.position);
     audio.motion(d / Math.max(dt, 1e-3) / 40);

@@ -658,7 +658,7 @@ tolerance, and they hold anywhere the code runs:
 | picking | project a tile's centre, aim there, and it must pick that tile — plus just inside its edge, and *not* from the gap past it |
 | framing | frame each arrangement, let the flight land, and every visible tile must project inside NDC |
 | detail panel | 12 selections must leave **one** history entry, and each must show the record it was asked for |
-| audio | the graph builds, costs nothing while off, and 500 impacts in one window make at most 5 voices |
+| audio | the graph builds, costs nothing while off, 500 impacts in one window make at most 5 voices, each positioned one gets exactly one panner, and the listener follows where it is put |
 
 Each earned itself. Picking's edge probe caught a broad-phase radius tightened from 0.92
 to 0.30 that a centre-only test passed happily. Framing caught the camera never moving at
@@ -674,6 +674,32 @@ never ran — that is the failure this harness has hit three separate times (phy
 disabled by a flag, the LOD cache never electing past ~8 units, the filter stagger
 flattened by `prefers-reduced-motion`). A check that measures nothing is worse than no
 check, because it reports green while a bug walks past.
+
+### Sound, and why it is synthesised rather than sampled
+
+There are no audio files. The bed is four detuned triangle oscillators under a slowly
+breathing lowpass; hover is a sine blip pitched from the record's word count into a major
+pentatonic scale, so no two tiles can sound wrong against each other; select is two notes
+a fifth apart; morph and impact are bandpass-swept noise. A sample library or Tone.js
+(~300 KB) would cost more than the five sounds it would provide, and would not make a
+noise burst sound more like a tile.
+
+Panning is the exception, because the platform already has it. The scene is 3D with a
+camera flying through it, and without a listener a pile collapsing off to the left sounded
+exactly like one in front of you — the one thing the audio could say about where an event
+happened, and it was not saying it. Impacts are positioned at the colliding body, hovers at
+the tile under the pointer, and the listener is set from the camera every frame.
+
+Two details are load-bearing. The panner is `equalpower`, not HRTF: the cap allows five
+impacts a frame and HRTF convolves every one of them, which is real CPU during exactly the
+moment the frame is busiest. And `refDistance` is 24 rather than the default 1, because the
+arrangements are tens of units across — at 1, everything past a tile or two is silent.
+
+Listener and panner positions are **assigned**, not scheduled. `setValueAtTime` queues
+against the context clock, which does not advance while the context is suspended, so a
+listener set before the first resume would sit at the origin with the whole soundstage
+nailed to it. That was a real bug in the first version of this, caught by the check
+asserting the listener goes where it is put.
 
 ### The camera has to be nailed down, and once was not
 

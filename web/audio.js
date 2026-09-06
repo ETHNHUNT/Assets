@@ -3,7 +3,14 @@
  *
  * Everything here is synthesised at runtime — no sample files, so the page stays
  * offline-capable and the repository does not grow. A sample library or Tone.js
- * (~300 KB) would cost more than the five sounds it would provide.
+ * (~300 KB) would cost more than the five sounds it would provide, and neither
+ * would make a filtered noise burst sound more like a tile.
+ *
+ * Panning is the exception worth taking, because it costs nothing: PannerNode and
+ * the listener are in the platform already. The scene is 3D with a camera flying
+ * through it, and without them a pile collapsing off to the left sounded exactly
+ * like one in front of you — the one thing the audio could say about where an
+ * event happened, and it was not saying it.
  *
  * Nothing is created until the user asks for sound: browsers suspend an
  * AudioContext constructed outside a gesture, and building the graph eagerly
@@ -116,7 +123,7 @@ export class AtlasAudio {
 
   /** Short blip when the pointer lands on a tile. Pitch tracks prompt length,
    *  so sweeping across the wall plays the shape of the data. */
-  hover(record) {
+  hover(record, x, y, z) {
     if (!this.on) return;
     const now = performance.now();
     if (now - this.lastHover < 55) return;             // one per ~55ms while sweeping
@@ -125,7 +132,7 @@ export class AtlasAudio {
     const step = PENTATONIC[Math.min(PENTATONIC.length - 1,
       Math.floor(Math.log2(1 + w) / 12 * PENTATONIC.length))];
     const oct = w > 200 ? 0 : w > 75 ? 1 : 2;
-    this._blip(this._note(step, oct), 0.045, 0.16, 'sine');
+    this._blip(this._note(step, oct), 0.045, 0.16, 'sine', x, y, z);
   }
 
   /** Two notes a fifth apart when a record is opened. */
@@ -154,8 +161,61 @@ export class AtlasAudio {
     src.start(t); src.stop(t + 1.0);
   }
 
+  /**
+   * Point the listener wherever the camera is.
+   *
+   * Plain numbers rather than a camera, because this module imports nothing and is
+   * the better for it — the caller already has the vectors and can spare nine floats.
+   *
+   * Set directly, not ramped. The listener is the ear, and smoothing it would drag
+   * the whole soundstage behind the picture during a flight.
+   */
+  setListener(px, py, pz, fx, fy, fz, ux, uy, uz) {
+    if (!this.ctx) return;
+    const L = this.ctx.listener;
+    if (L.positionX) {
+      // Assigned, not scheduled. setValueAtTime queues against the context clock,
+      // which does not advance while the context is suspended — so a listener set
+      // before the first resume would sit at the origin and the whole soundstage
+      // would be nailed to wherever the page started. Assignment applies now.
+      L.positionX.value = px; L.positionY.value = py; L.positionZ.value = pz;
+      L.forwardX.value = fx; L.forwardY.value = fy; L.forwardZ.value = fz;
+      L.upX.value = ux; L.upY.value = uy; L.upZ.value = uz;
+    } else {                                    // Safari still wants the old calls
+      L.setPosition(px, py, pz);
+      L.setOrientation(fx, fy, fz, ux, uy, uz);
+    }
+  }
+
+  /**
+   * A panner at a world position, or null when no position was given.
+   *
+   * equalpower rather than HRTF: the cap allows five impacts a frame and HRTF
+   * convolves every one of them, which is real CPU during exactly the moment — a
+   * collapsing pile — when the frame is already the busiest it gets. Equalpower
+   * places a sound left or right convincingly and costs almost nothing.
+   *
+   * refDistance is 24 because the arrangements are tens of units across, not metres:
+   * at the default of 1, everything past a tile or two would be silent.
+   */
+  _panner(x, y, z) {
+    if (x === undefined) return null;
+    const p = this.ctx.createPanner();
+    p.panningModel = 'equalpower';
+    p.distanceModel = 'inverse';
+    p.refDistance = 24;
+    p.maxDistance = 600;
+    p.rolloffFactor = 0.9;
+    if (p.positionX) {
+      p.positionX.value = x; p.positionY.value = y; p.positionZ.value = z;
+    } else {
+      p.setPosition(x, y, z);
+    }
+    return p;
+  }
+
   /** One tile striking another. `mag` is normalised 0..1 impact strength. */
-  impact(mag) {
+  impact(mag, x, y, z) {
     if (!this.on) return;
     const now = performance.now();
     if (now - this.impactWindow > 16) { this.impactWindow = now; this.impacts = 0; }
@@ -176,7 +236,9 @@ export class AtlasAudio {
     g.gain.setValueAtTime(0.0001, t);
     g.gain.exponentialRampToValueAtTime(peak, t + 0.003);
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    src.connect(f).connect(g).connect(this.master);
+    const pan = this._panner(x, y, z);
+    if (pan) src.connect(f).connect(g).connect(pan).connect(this.master);
+    else src.connect(f).connect(g).connect(this.master);
     src.start(t); src.stop(t + dur + 0.02);
   }
 
@@ -187,7 +249,7 @@ export class AtlasAudio {
     this.bed.filter.frequency.setTargetAtTime(target, this.ctx.currentTime, 0.25);
   }
 
-  _blip(freq, gain, dur, type) {
+  _blip(freq, gain, dur, type, x, y, z) {
     const ctx = this.ctx, t = ctx.currentTime;
     const o = ctx.createOscillator();
     o.type = type; o.frequency.value = freq;
@@ -195,7 +257,9 @@ export class AtlasAudio {
     g.gain.setValueAtTime(0.0001, t);
     g.gain.exponentialRampToValueAtTime(gain, t + 0.012);
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    o.connect(g).connect(this.master);
+    const pan = this._panner(x, y, z);
+    if (pan) o.connect(g).connect(pan).connect(this.master);
+    else o.connect(g).connect(this.master);
     o.start(t); o.stop(t + dur + 0.02);
   }
 }
