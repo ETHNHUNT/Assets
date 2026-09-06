@@ -18,9 +18,14 @@ pitch by 1.3% reads 14. So the baseline is sensitive to what it needs to be sens
 — but it is specific to a backend and a machine. Re-capture after changing browser,
 driver or backend; never widen the tolerance to silence a diff you have not explained.
 
-Running WebGPU headlessly needs the recipe from README section 7 — headed under Xvfb,
-software Vulkan pinned, `--disable-vulkan-surface` — which this sets up itself. Without
-mesa-vulkan-drivers installed it falls back to the WebGL2 backend and says so.
+The browser always launches headed: headless Chrome has no surface to present to, so it
+hands back SwiftShader and a software frame that is not what you meant to test. On macOS
+that is the whole story — WebGPU runs on Metal unaided. On Linux it needs the recipe from
+README section 7, headed under Xvfb with software Vulkan pinned, which this sets up itself;
+without mesa-vulkan-drivers it falls back to the WebGL2 backend and says so.
+
+Whichever path runs, the backend and adapter actually bound are checked against the one
+asked for, and a mismatch exits rather than quietly recording the wrong frame.
 """
 import argparse, http.server, json, os, socket, socketserver, subprocess, sys, threading, time
 
@@ -63,10 +68,15 @@ def chromium_path():
     return cands[-1] if cands else None
 
 CHROME_FLAGS = [
-    "--enable-unsafe-webgpu", "--enable-features=Vulkan", "--disable-vulkan-surface",
+    "--enable-unsafe-webgpu",
     "--ignore-gpu-blocklist", "--disable-gpu-driver-bug-workarounds",
     "--disable-gpu-watchdog", "--no-sandbox",
 ]
+
+# Linux reaches WebGPU through a software Vulkan stack, and pinning it is what makes a
+# container reproducible. macOS reaches it through Metal and needs none of this — asking
+# Chrome for Vulkan there points it at a driver the machine does not have.
+LINUX_VULKAN_FLAGS = ["--enable-features=Vulkan", "--disable-vulkan-surface"]
 
 # Each scene is (name, layout mode, camera position). The camera is parked explicitly
 # because OrbitControls damping never quite settles, and a drifting camera would make
@@ -106,12 +116,15 @@ def capture(backend, scenes, timeout_s=90):
 
     port = free_port()
     httpd = serve(port)
-    env_icd = os.path.exists(VULKAN_ICD)
-    if env_icd:
-        os.environ["VK_DRIVER_FILES"] = VULKAN_ICD
-    elif backend == "webgpu":
-        print("  mesa-vulkan-drivers not installed — falling back to the WebGL2 backend")
-        backend = "webgl"
+    chrome_flags = list(CHROME_FLAGS)
+    if sys.platform.startswith("linux"):
+        # Only Linux needs the software Vulkan stack, and only Linux can be missing it.
+        if os.path.exists(VULKAN_ICD):
+            os.environ["VK_DRIVER_FILES"] = VULKAN_ICD
+            chrome_flags += LINUX_VULKAN_FLAGS
+        elif backend == "webgpu":
+            print("  mesa-vulkan-drivers not installed — falling back to the WebGL2 backend")
+            backend = "webgl"
 
     flags = "dust=0&audio=0&physics=0"
     if backend == "webgl":
@@ -120,11 +133,13 @@ def capture(backend, scenes, timeout_s=90):
 
     out = {}
     with sync_playwright() as pw:
-        # headed under Xvfb: a headless swapchain reads back blank (README section 7)
+        # Headed on purpose, and on every platform: a headless Chrome has no surface to
+        # present to, so it answers with SwiftShader and reads back a software frame that
+        # is not the thing being tested. Linux supplies the display via Xvfb.
         exe = chromium_path()
         if exe:
             print(f"  chromium: {exe}")
-        browser = pw.chromium.launch(headless=False, args=CHROME_FLAGS,
+        browser = pw.chromium.launch(headless=False, args=chrome_flags,
                                      executable_path=exe or None)
         page = browser.new_page(viewport={"width": 1280, "height": 800},
                                 reduced_motion="reduce")   # morphs land instantly
@@ -134,7 +149,35 @@ def capture(backend, scenes, timeout_s=90):
         page.wait_for_function("() => window.__atlas && window.__atlas.counts.instances > 0",
                                timeout=timeout_s * 1000)
         info = page.evaluate("() => ({...window.__atlas.counts, ...window.__atlas.flags})")
-        print(f"  backend={backend} instances={info['instances']} active={info['active']}")
+
+        # What was asked for is not always what runs: a headless Chrome, a blocklisted
+        # GPU or a missing driver all degrade quietly, and a baseline captured off
+        # SwiftShader looks fine until it is compared against one that is not. Ask the
+        # renderer what it actually bound, and refuse rather than record the wrong thing.
+        actual = page.evaluate("""async () => {
+          const b = window.__atlas.renderer.backend;
+          let adapter = null;
+          if (navigator.gpu) {
+            const a = await navigator.gpu.requestAdapter();
+            const i = a && (a.info || (a.requestAdapterInfo ? await a.requestAdapterInfo() : null));
+            if (i) adapter = [i.vendor, i.architecture].filter(Boolean).join('/');
+          }
+          return { webgpu: !!b.isWebGPUBackend, adapter };
+        }""")
+        ran = "webgpu" if actual["webgpu"] else "webgl"
+        adapter = actual["adapter"] or "n/a"
+        # Only meaningful under WebGPU. navigator.gpu answers on a WebGL run too, but
+        # three never bound that adapter, so printing it there would name the wrong device.
+        shown = f" adapter={adapter}" if ran == "webgpu" else ""
+        print(f"  backend={ran}{shown} "
+              f"instances={info['instances']} active={info['active']}")
+        if ran != backend:
+            browser.close(); httpd.shutdown()
+            sys.exit(f"asked for the {backend} backend, got {ran} — refusing to use the frame")
+        if ran == "webgpu" and "swiftshader" in adapter.lower():
+            browser.close(); httpd.shutdown()
+            sys.exit("WebGPU resolved to SwiftShader, a software adapter — refusing to "
+                     "use the frame. This means Chrome found no usable GPU.")
 
         for name, mode, (x, y, z) in scenes:
             page.evaluate("([m]) => window.__atlas.setLayout(m, true)", [mode])

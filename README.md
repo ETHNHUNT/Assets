@@ -601,23 +601,42 @@ diff you have not explained.
 **On the WebGPU path in a container:** three r185's WebGPU backend sends a `swizzle`
 texture-view property that Chromium 1194 rejects outright (`Failed to read the 'swizzle'
 property from 'GPUTextureViewDescriptor'`), so the page never finishes booting there. That
-is a browser-version mismatch, not a bug in this code — current Chrome renders it. The
-verifier falls back to `--backend webgl`, which exercises the same TSL material and the
-same layout maths through the WebGL2 fallback.
+is a browser-version mismatch, not a bug in this code — current Chrome renders it. In that
+container the verifier falls back to `--backend webgl`, which exercises the same TSL
+material and the same layout maths through the WebGL2 fallback.
 
 ### Verifying it headlessly
 
-Headless Chrome cannot screenshot a WebGPU swapchain — you get a blank frame while the page is
-demonstrably rendering. The working recipe is three.js's own E2E setup (`test/e2e/puppeteer.js`):
-run **headed under Xvfb**, pin the software Vulkan driver, and add `--disable-vulkan-surface`.
+Headless Chrome cannot screenshot a WebGPU swapchain — you get a blank frame while the page
+is demonstrably rendering. A headless browser has no surface to present to, so it answers
+`requestAdapter()` with SwiftShader and reads back a software frame that is not the thing
+being tested. The verifier therefore launches **headed on every platform**; what it takes to
+put a real GPU behind that window is what differs.
+
+**macOS** needs nothing. WebGPU runs on Metal and Chrome finds it unaided:
+
+```bash
+python3 tools/verify_web.py --update --backend webgpu --tag mbp   # capture
+python3 tools/verify_web.py --backend webgpu --tag mbp            # check
+```
+
+**Linux** has no GPU in a container, so the recipe is three.js's own E2E setup
+(`test/e2e/puppeteer.js`): headed under Xvfb with the software Vulkan driver pinned. The
+verifier sets `VK_DRIVER_FILES` and adds the Vulkan flags itself when it finds the ICD, and
+falls back to `--backend webgl` when it does not — those flags are Linux-only, since asking
+for Vulkan on a Mac points Chrome at a driver that is not there.
 
 ```bash
 sudo apt-get install -y mesa-vulkan-drivers xvfb
-export VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json
-# chrome flags: --enable-unsafe-webgpu --enable-features=Vulkan --disable-vulkan-surface
-#               --ignore-gpu-blocklist --disable-gpu-driver-bug-workarounds
-#               --disable-gpu-watchdog --no-sandbox
+# then, added by the verifier: VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json
+#   --enable-unsafe-webgpu --enable-features=Vulkan --disable-vulkan-surface
+#   --ignore-gpu-blocklist --disable-gpu-driver-bug-workarounds
+#   --disable-gpu-watchdog --no-sandbox
 ```
+
+Either way the run prints the backend and adapter it actually bound — `backend=webgpu
+adapter=apple/metal-3` — and exits nonzero rather than record a frame from a backend you did
+not ask for, or from a software adapter standing in for a GPU.
 
 Without `--disable-vulkan-surface` the Dawn instance is dropped and even `readRenderTargetPixelsAsync`
 fails. With it, read the frame off the GPU rather than screenshotting it — `window.__atlas` exposes
