@@ -21,6 +21,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { animate, createSpring } from 'animejs';
 import { AtlasAudio } from './audio.js';
 import { PhysicsWorld } from './physics.js';
+import { MorphController } from './morph.js';
 
 // --------------------------------------------------------------- flags ------
 /**
@@ -112,19 +113,36 @@ let aMeta, aFromPD, aToPos, aQuatA, aQuatB;
  * delay, so a re-arrangement is a wave rather than a jump and costs no CPU per
  * frame. Which means: a tile's drawn position is NOT instanceMatrix (that stays
  * identity) and is not posCur either while a morph is in flight — it is the
- * interpolation of these two buffers. bakeCurrent() is what collapses the two
+ * interpolation of these two buffers. MorphController.bake() collapses the two
  * back into one, and __atlas.positions exposes posCur for tests that need it.
  *
- * OWNERSHIP: exactly one system writes these per frame — MorphController while a
- * layout is settling, PhysicsWorld while physics runs. The handoff is
- * bakeCurrent() on the way in and writeMatrices() on the way out; anything that
- * writes them from a third place is a bug.
+ * OWNERSHIP is per CHANNEL, not per buffer. An earlier version of this comment
+ * said one system writes these at a time; that was never true, and a refactor
+ * that believed it would corrupt the LOD fade:
+ *
+ *   aFromPD  .xyz .w        MorphController          (web/morph.js)
+ *   aToPos   .xyz           MorphController
+ *   aToPos   .w             the detail cache         — cross-fade, concurrent
+ *   aQuatA, aQuatB          MorphController
+ *   aMeta    .x             set once at build
+ *   aMeta    .y .z          the hover/filter easing in tick()
+ *   aMeta    .w             the detail cache         — slot binding
+ *
+ * So `aToPos` has two writers at the same instant, and so does `aMeta`. They do
+ * not collide only because each touches its own lanes. The rule that matters is
+ * therefore: write channels, never whole arrays. A `.set()` over an attribute
+ * would be shorter and would blank whatever the other owner had just put there.
+ *
+ * PhysicsWorld is the one exception, and it is an exception about posCur rather
+ * than about these buffers: while it runs it owns posCur/quatCur outright, and
+ * it reaches the GPU through MorphController.flatten() rather than writing here
+ * itself. That is the handoff — bake() on the way in, flatten() on the way out.
  */
 const M_CELL = 0, M_DIM = 1, M_FOCUS = 2, M_DETAIL = 3;
 const uMorph = uniform(1);                  // 0 = at A, 1 = at B; the shader staggers per tile
 const STAGGER = 0.34;                       // fraction of the timeline given over to the wave
-let posCur, posTo, quatCur, quatTo;      // morph buffers
-let morph = 1;                           // 1 = settled
+let morphCtl = null;                     // owns the four buffers below; see web/morph.js
+let posCur, posTo, quatCur, quatTo;      // aliases into morphCtl, for readability at call sites
 let active = null;                       // Uint8Array: does record pass filters
 let hovered = -1, selected = -1;
 let mode = 'grid';
@@ -193,7 +211,7 @@ async function boot() {
       },
       forceDetail() { detailDue = 0; updateDetailCache(); },
       pickNow() { return pickInstance(); },
-      get morph() { return morph; },
+      get morph() { return morphCtl.value; },
       get detailCanvas() { return detailCtx && detailCtx.canvas; },
       get detailTex() { return DETAIL; },
       get atlasTex() { return ATLAS; },
@@ -285,7 +303,7 @@ async function boot() {
         controls.update();
         camera.updateMatrixWorld(true);
       },
-      get settled() { return morph >= 1 && !morphAnim; },
+      get settled() { return morphCtl.settled; },
       get physicsWorld() { return physics; },
       get flags() { return { ...FLAGS }; },
       get counts() { return { instances: N, active: active.reduce((a, v) => a + v, 0) }; },
@@ -524,8 +542,11 @@ function buildScene() {
   mesh.instanceMatrix.needsUpdate = true;
   scene.add(mesh);
 
-  posCur = new Float32Array(N * 3); posTo = new Float32Array(N * 3);
-  quatCur = new Float32Array(N * 4); quatTo = new Float32Array(N * 4);
+  morphCtl = new MorphController({
+    n: N, uMorph, stagger: STAGGER,
+    attrs: { aFromPD, aToPos, aQuatA, aQuatB },
+  });
+  ({ posCur, posTo, quatCur, quatTo } = morphCtl);
   for (let i = 0; i < N; i++) { quatCur[i * 4 + 3] = 1; quatTo[i * 4 + 3] = 1; dimNow[i] = 1; focusNow[i] = 0; }
 
   active = new Uint8Array(N).fill(1);
@@ -765,10 +786,6 @@ function choosePhysList() {
   return physList;
 }
 
-function setTarget(i, x, y, z, q) {
-  posTo[i * 3] = x; posTo[i * 3 + 1] = y; posTo[i * 3 + 2] = z;
-  quatTo[i * 4] = q.x; quatTo[i * 4 + 1] = q.y; quatTo[i * 4 + 2] = q.z; quatTo[i * 4 + 3] = q.w;
-}
 
 const FLAT = new THREE.Quaternion();
 
@@ -787,7 +804,7 @@ function viewAspect(landscape) {
  * shell so the shape you are looking at is always the shape of your query.
  */
 function layout(next, instant) {
-  if (morph < 1) bakeCurrent();          // never jump: start from where they are
+  if (morphCtl.value < 1) morphCtl.bake();   // never jump: start from where they are
   if (next) mode = next;
   if (mode !== 'physics') stopPhysics();
 
@@ -928,24 +945,21 @@ function layout(next, instant) {
   // unmatched: pushed to a far shell, shrunk and desaturated by the shader
   let s = 0;
   for (let i = 0; i < N; i++) {
-    if (out[i]) { setTarget(i, out[i][0], out[i][1], out[i][2], out[i][3]); continue; }
+    if (out[i]) { morphCtl.setTarget(i, out[i][0], out[i][1], out[i][2], out[i][3]); continue; }
     const y = 1 - (s / Math.max(1, N - n)) * 2;
     const rad = Math.sqrt(Math.max(0, 1 - y * y));
     const th = 2.39996 * s; s++;
     const R = 300;
-    setTarget(i, Math.cos(th) * rad * R, y * R * 0.6, Math.sin(th) * rad * R, FLAT);
+    morphCtl.setTarget(i, Math.cos(th) * rad * R, y * R * 0.6, Math.sin(th) * rad * R, FLAT);
   }
 
   buildLabels();
   if (!instant) audio.morph();
   if (instant) {
-    if (morphAnim) { morphAnim.pause(); morphAnim = null; }
-    posCur.set(posTo); quatCur.set(quatTo);
-    morph = 1; uploadMorph(false); uMorph.value = 1;
+    morphCtl.settle();
   } else {
-    morphDuration = pickDuration();
-    uploadMorph(!REDUCED);
-    startMorph();
+    morphCtl.upload(!REDUCED);
+    morphCtl.start(morphCtl.pickDuration(active, REDUCED));
   }
 }
 
@@ -955,110 +969,24 @@ function layout(next, instant) {
  * Tiles that travel furthest are given the smallest delay, so the arrangement
  * empties from its edges and settles inward.
  */
-function uploadMorph(stagger = true) {
-  let maxD = 0;
-  for (let i = 0; i < N; i++) {
-    const a = i * 3;
-    const dx = posTo[a] - posCur[a], dy = posTo[a + 1] - posCur[a + 1], dz = posTo[a + 2] - posCur[a + 2];
-    const d = dx * dx + dy * dy + dz * dz;
-    if (d > maxD) maxD = d;
-  }
-  maxD = Math.sqrt(maxD) || 1;
-
-  for (let i = 0; i < N; i++) {
-    const a = i * 3, b = i * 4;
-    aFromPD.array[b] = posCur[a]; aFromPD.array[b + 1] = posCur[a + 1]; aFromPD.array[b + 2] = posCur[a + 2];
-    aToPos.array[b] = posTo[a]; aToPos.array[b + 1] = posTo[a + 1]; aToPos.array[b + 2] = posTo[a + 2];
-    for (let k = 0; k < 4; k++) { aQuatA.array[b + k] = quatCur[b + k]; aQuatB.array[b + k] = quatTo[b + k]; }
-    let delay = 0;
-    if (stagger) {
-      const dx = posTo[a] - posCur[a], dy = posTo[a + 1] - posCur[a + 1], dz = posTo[a + 2] - posCur[a + 2];
-      delay = (1 - Math.sqrt(dx * dx + dy * dy + dz * dz) / maxD) * STAGGER;   // furthest leaves first
-    }
-    aFromPD.array[b + 3] = delay;
-  }
-  aFromPD.needsUpdate = aToPos.needsUpdate = true;
-  aQuatA.needsUpdate = aQuatB.needsUpdate = true;
-}
 
 /** Physics owns the positions while it runs: push them straight to the B slot. */
-function writeMatrices() {
-  for (let i = 0; i < N; i++) {
-    const a = i * 3, b = i * 4;
-    aFromPD.array[b] = aToPos.array[b] = posCur[a];
-    aFromPD.array[b + 1] = aToPos.array[b + 1] = posCur[a + 1];
-    aFromPD.array[b + 2] = aToPos.array[b + 2] = posCur[a + 2];
-    aFromPD.array[b + 3] = 0;
-    for (let k = 0; k < 4; k++) aQuatA.array[b + k] = aQuatB.array[b + k] = quatCur[b + k];
-  }
-  aFromPD.needsUpdate = aToPos.needsUpdate = true;
-  aQuatA.needsUpdate = aQuatB.needsUpdate = true;
-  uMorph.value = 1;
-}
 
 const REDUCED = matchMedia('(prefers-reduced-motion: reduce)').matches;
-let morphDuration = 1.1;
 
 /** A short hop and a full re-arrangement should not take the same time. */
-function pickDuration() {
-  if (REDUCED) return 0.001;
-  let sum = 0, n = 0;
-  for (let i = 0; i < N; i += 7) {            // sampled: exact is not worth 2,619 sqrts
-    if (!active[i]) continue;
-    const a = i * 3;
-    const dx = posTo[a] - posCur[a], dy = posTo[a + 1] - posCur[a + 1], dz = posTo[a + 2] - posCur[a + 2];
-    sum += Math.sqrt(dx * dx + dy * dy + dz * dz); n++;
-  }
-  const mean = n ? sum / n : 0;
-  return Math.min(1.8, Math.max(0.9, 0.75 + mean * 0.012));
-}
 
-let morphAnim = null;
 
 /**
  * The master clock stays linear and the shader eases each tile inside its own
  * stagger window — easing here as well would compress the wave and read sluggish.
  */
-function startMorph() {
-  if (morphAnim) morphAnim.pause();
-  const box = { t: 0 };
-  morph = 0; uMorph.value = 0;
-  morphAnim = animate(box, {
-    t: 1,
-    duration: morphDuration * 1000,
-    ease: 'linear',
-    onUpdate: () => { morph = box.t; uMorph.value = morph; },
-    onComplete: () => {
-      morph = 1; uMorph.value = 1;
-      posCur.set(posTo); quatCur.set(quatTo);
-      morphAnim = null;
-    },
-  });
-}
 
 /**
  * Freeze the in-flight interpolation into posCur/quatCur, matching the shader
  * exactly — same per-instance delay, same easing — so a layout change mid-flight
  * starts from where the tiles are actually drawn rather than jumping.
  */
-function bakeCurrent() {
-  if (morphAnim) { morphAnim.pause(); morphAnim = null; }
-  for (let i = 0; i < N; i++) {
-    const a = i * 3, b = i * 4;
-    const d = aFromPD.array[i * 4 + 3];
-    const tl = Math.min(1, Math.max(0, (morph - d) / Math.max(1 - d, 0.001)));
-    const e = tl * tl * (3 - 2 * tl);
-    _pa.set(posCur[a], posCur[a + 1], posCur[a + 2]);
-    _pb.set(posTo[a], posTo[a + 1], posTo[a + 2]);
-    _pa.lerp(_pb, e);
-    posCur[a] = _pa.x; posCur[a + 1] = _pa.y; posCur[a + 2] = _pa.z;
-    _qa.set(quatCur[b], quatCur[b + 1], quatCur[b + 2], quatCur[b + 3]);
-    _qb.set(quatTo[b], quatTo[b + 1], quatTo[b + 2], quatTo[b + 3]);
-    _qa.slerp(_qb, e);
-    quatCur[b] = _qa.x; quatCur[b + 1] = _qa.y; quatCur[b + 2] = _qa.z; quatCur[b + 3] = _qa.w;
-  }
-  morph = 1;
-}
 
 // ------------------------------------------------------------- physics ------
 // The pile owns posCur/quatCur while it runs; see web/physics.js. It is built
@@ -1068,7 +996,7 @@ let physics = null;
 function makePhysics() {
   return new PhysicsWorld({
     posCur, quatCur, audio,
-    onStep: writeMatrices,          // the sim writes positions; the caller uploads them
+    onStep: () => morphCtl.flatten(),   // the sim writes positions; morph uploads them
     rng: stream(),
   });
 }
@@ -1089,7 +1017,7 @@ async function startPhysics() {
     setTimeout(() => $('#load').classList.add('gone'), 200);
   }
   await physics.start(list);
-  morph = 1;
+  morphCtl.value = 1;
 }
 
 function stopPhysics() { if (physics) physics.stop(); }
@@ -1136,7 +1064,7 @@ addEventListener('pointerup', (e) => {
   // wherever the pointer was last seen — on a phone that is a different record
   // entirely, and it opens silently with no sign anything went wrong.
   ptr.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
-  const id = morph < 1 ? -1 : pickInstance();
+  const id = morphCtl.value < 1 ? -1 : pickInstance();
   if (id >= 0) {
     hovered = id; easeSettled = false;
     selectIndex(id);
@@ -1207,7 +1135,7 @@ function pick() {
   pointerMoved = false;
   // mid-morph the CPU copy of the positions is the start of the flight, not
   // where the tiles are drawn, so a hover then lands on the wrong tile
-  const id = morph < 1 ? -1 : pickInstance();
+  const id = morphCtl.value < 1 ? -1 : pickInstance();
   if (id === hovered) return;
   hovered = id;
   easeSettled = false;
@@ -1594,7 +1522,7 @@ function tick() {
   if (DETAIL) {
     flushDetail();                       // blit before this frame's render
     detailDue -= dt;
-    if (detailDue <= 0 && morph >= 1) { detailDue = 0.22; updateDetailCache(); }
+    if (detailDue <= 0 && morphCtl.value >= 1) { detailDue = 0.22; updateDetailCache(); }
   }
 
   if (fly) {
@@ -1609,7 +1537,7 @@ function tick() {
   }
 
   if (labelGroup) {
-    const a = physics?.ready ? 0 : morph;
+    const a = physics?.ready ? 0 : morphCtl.value;
     labelGroup.visible = a > 0.05;
     labelGroup.children.forEach((m) => {
       m.material.opacity = a;
