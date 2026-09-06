@@ -23,6 +23,7 @@ import { AtlasAudio } from './audio.js';
 import { PhysicsWorld } from './physics.js';
 import { MorphController } from './morph.js';
 import { computeLayout, FLAT } from './layouts.js';
+import { DetailCache } from './detail.js';
 
 // --------------------------------------------------------------- flags ------
 /**
@@ -123,11 +124,11 @@ let aMeta, aFromPD, aToPos, aQuatA, aQuatB;
  *
  *   aFromPD  .xyz .w        MorphController          (web/morph.js)
  *   aToPos   .xyz           MorphController
- *   aToPos   .w             the detail cache         — cross-fade, concurrent
+ *   aToPos   .w             DetailCache              (web/detail.js) — concurrent
  *   aQuatA, aQuatB          MorphController
  *   aMeta    .x             set once at build
  *   aMeta    .y .z          the hover/filter easing in tick()
- *   aMeta    .w             the detail cache         — slot binding
+ *   aMeta    .w             DetailCache              — slot binding
  *
  * So `aToPos` has two writers at the same instant, and so does `aMeta`. They do
  * not collide only because each touches its own lanes. The rule that matters is
@@ -204,17 +205,12 @@ async function boot() {
 
     window.__atlas = { THREE, renderer, scene, camera, mesh, controls, audio,
       get pipeline() { return pipeline; }, setBloom,
-      get detail() {
-        if (!DETAIL) return null;
-        return { slots: DETAIL_SLOTS, held: slotOwner.reduce((a, v) => a + (v >= 0 ? 1 : 0), 0),
-                 filled: detailFilled, inFlight: detailLoads,
-                 bound: Array.from(aMeta.array).filter((v, k) => k % 4 === M_DETAIL && v >= 0).length };
-      },
-      forceDetail() { detailDue = 0; updateDetailCache(); },
+      get detail() { return detail ? detail.stats : null; },
+      forceDetail() { if (detail) { detail.due = 0; detail.update(camera, posCur, active); } },
       pickNow() { return pickInstance(); },
       get morph() { return morphCtl.value; },
-      get detailCanvas() { return detailCtx && detailCtx.canvas; },
-      get detailTex() { return DETAIL; },
+      get detailCanvas() { return detail && detail.canvas; },
+      get detailTex() { return detail && detail.texture; },
       get atlasTex() { return ATLAS; },
       // instanceMatrix is identity — placement lives in positionNode — so tests
       // that need where a tile actually is have to read this
@@ -368,130 +364,10 @@ const SMALL = matchMedia('(max-width:820px), (max-height:520px)').matches;
 // this — the cache matters more on mobile than on desktop, not less. It is the
 // budget that shrinks: 1024² is 4 MB against the desktop's 16 MB, holding 16
 // cells at the same 256px crispness.
-const DETAIL_SIDE = (COARSE || SMALL) ? 1024 : 2048, DETAIL_CELL = 256;
-const DETAIL_PER_ROW = DETAIL_SIDE / DETAIL_CELL;          // 4 on a phone, 8 otherwise
-const DETAIL_SLOTS = DETAIL_PER_ROW * DETAIL_PER_ROW;      // 16 or 64 crisp tiles
+const DETAIL_SIDE = (COARSE || SMALL) ? 1024 : 2048;
 const DETAIL_MIN_PX = 74;        // only worth loading once a tile is this big on screen
-let DETAIL = null, detailCtx = null;
-let slotOwner = null;            // slot -> record index, or -1
-let recordSlot = null;           // record index -> slot, or -1
-let detailFree = [];
-let detailLoads = 0, detailFilled = 0, detailDue = 0;
-// Decoded images wait here and are blitted at a frame boundary. Drawing straight
-// from onload lets a write land between needsUpdate and the GPU's copy of the
-// canvas, which shows up as a torn cell.
-let detailPending = [];
-const detailFade = new Map();          // record index -> 0..1, only while fading
+let detail = null;               // DetailCache; owns aMeta.w and aToPos.w, see web/detail.js
 
-function buildDetailCache() {
-  const canvas = document.createElement('canvas');
-  canvas.width = canvas.height = DETAIL_SIDE;
-  detailCtx = canvas.getContext('2d', { willReadFrequently: false });
-  detailCtx.fillStyle = '#0a0c10';
-  detailCtx.fillRect(0, 0, DETAIL_SIDE, DETAIL_SIDE);
-
-  DETAIL = new THREE.Texture(canvas);
-  DETAIL.colorSpace = THREE.SRGBColorSpace;
-  DETAIL.flipY = false;
-  DETAIL.minFilter = THREE.LinearFilter;      // no mipmaps: cells change at runtime
-  DETAIL.magFilter = THREE.LinearFilter;
-  DETAIL.generateMipmaps = false;
-  DETAIL.needsUpdate = true;
-
-  slotOwner = new Int32Array(DETAIL_SLOTS).fill(-1);
-  recordSlot = new Int32Array(N).fill(-1);
-  detailFree = Array.from({ length: DETAIL_SLOTS }, (_, i) => i);
-}
-
-/** Screen size of a unit tile at distance d, in pixels. */
-function tilePixels(d) {
-  const focal = (innerHeight * 0.5) / Math.tan((camera.fov * Math.PI / 180) * 0.5);
-  return focal / Math.max(d, 0.001);
-}
-
-function releaseSlot(slot) {
-  const i = slotOwner[slot];
-  if (i < 0) return;
-  slotOwner[slot] = -1;
-  recordSlot[i] = -1;
-  if (aMeta.array[i * 4 + M_DETAIL] !== -1) {
-    aMeta.array[i * 4 + M_DETAIL] = -1; aMeta.needsUpdate = true;
-    detailFade.delete(i);
-    aToPos.array[i * 4 + 3] = 0; aToPos.needsUpdate = true;
-  }
-  detailFree.push(slot);
-  detailPending = detailPending.filter((q) => q.slot !== slot);
-}
-
-function loadDetail(i, slot) {
-  const rec = DATA.records[i];
-  if (!rec.th) { releaseSlot(slot); return; }
-  detailLoads++;
-  const img = new Image();
-  img.decoding = 'async';
-  img.onload = () => {
-    detailLoads--;
-    if (slotOwner[slot] !== i) return;                 // evicted while in flight
-    detailPending.push({ i, slot, img });
-  };
-  img.onerror = () => { detailLoads--; if (slotOwner[slot] === i) releaseSlot(slot); };
-  img.src = `../assets/${rec.th}`;
-}
-
-/** Blit decoded images into the cache and upload once. Called from the loop. */
-function flushDetail() {
-  if (!detailPending.length) return;
-  let wrote = 0;
-  while (detailPending.length && wrote < 6) {
-    const { i, slot, img } = detailPending.shift();
-    if (slotOwner[slot] !== i) continue;               // evicted while queued
-    const sx = (slot % DETAIL_PER_ROW) * DETAIL_CELL;
-    const sy = Math.floor(slot / DETAIL_PER_ROW) * DETAIL_CELL;
-    const side = Math.min(img.width, img.height);
-    if (!side) continue;
-    detailCtx.clearRect(sx, sy, DETAIL_CELL, DETAIL_CELL);
-    // centre-crop to square, matching how tools/build_web.py packs the atlas
-    detailCtx.drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side,
-                        sx, sy, DETAIL_CELL, DETAIL_CELL);
-    aMeta.array[i * 4 + M_DETAIL] = slot;
-    detailFade.set(i, 0);
-    detailFilled++; wrote++;
-  }
-  if (wrote) { DETAIL.needsUpdate = true; aMeta.needsUpdate = true; }
-}
-
-/**
- * Re-elect which records hold the cache. Runs a few times a second, not per
- * frame: it walks every record, and a full texture re-upload is not free.
- */
-function updateDetailCache() {
-  if (!DETAIL) return;
-  const maxDist = tilePixels(1) / DETAIL_MIN_PX;      // distance at which a tile fills DETAIL_MIN_PX
-  const cam = camera.position;
-  const near = [];
-  for (let i = 0; i < N; i++) {
-    if (!active[i]) continue;
-    const a = i * 3;
-    const dx = posCur[a] - cam.x, dy = posCur[a + 1] - cam.y, dz = posCur[a + 2] - cam.z;
-    const d2 = dx * dx + dy * dy + dz * dz;
-    if (d2 < maxDist * maxDist) near.push([d2, i]);
-  }
-  near.sort((p, q) => p[0] - q[0]);
-  const want = new Set();
-  for (let k = 0; k < Math.min(near.length, DETAIL_SLOTS); k++) want.add(near[k][1]);
-
-  for (let slot = 0; slot < DETAIL_SLOTS; slot++) {
-    const owner = slotOwner[slot];
-    if (owner >= 0 && !want.has(owner)) releaseSlot(slot);
-  }
-  for (const i of want) {
-    if (recordSlot[i] >= 0 || !detailFree.length) continue;
-    if (detailLoads >= 8) break;                       // keep the network queue short
-    const slot = detailFree.pop();
-    slotOwner[slot] = i; recordSlot[i] = slot;
-    loadDetail(i, slot);
-  }
-}
 
 // --------------------------------------------------------------- scene ------
 function buildScene() {
@@ -532,8 +408,13 @@ function buildScene() {
   geo.setAttribute('aQuatA', aQuatA);
   geo.setAttribute('aQuatB', aQuatB);
 
-  // must precede tileMaterial(): the material samples DETAIL if it exists
-  if (FLAGS.lod) buildDetailCache();
+  // must precede tileMaterial(): the material samples the cache texture if it exists
+  if (FLAGS.lod) {
+    detail = new DetailCache({
+      n: N, records: DATA.records, attrs: { aMeta, aToPos },
+      lanes: { detail: M_DETAIL }, side: DETAIL_SIDE, minPx: DETAIL_MIN_PX,
+    });
+  }
 
   mesh = new THREE.InstancedMesh(geo, tileMaterial(), N);
   mesh.frustumCulled = false;
@@ -577,15 +458,15 @@ function tileMaterial() {
 
   let base = texture(ATLAS, auv).rgb;
 
-  if (DETAIL) {
+  if (detail) {
     // Both textures are sampled and mixed rather than branched: a per-instance
     // branch diverges across a wavefront for no saving on two texture reads.
-    const dper = float(DETAIL_PER_ROW);
+    const dper = float(detail.perRow);
     const det = meta.w;
     const dsnap = snap(det);
     const duv = vec2(dsnap.mod(dper), dsnap.div(dper).floor()).add(cellLocal).div(dper);
     // cross-fade rather than switch, so sharpening is felt instead of seen
-    base = mix(base, texture(DETAIL, duv).rgb, tslStep(float(0), det).mul(toPD.w));
+    base = mix(base, texture(detail.texture, duv).rgb, tslStep(float(0), det).mul(toPD.w));
   }
   const lum = base.r.mul(0.299).add(base.g.mul(0.587)).add(base.b.mul(0.114));
   const ghost = vec3(lum.mul(0.30), lum.mul(0.33), lum.mul(0.46));   // cold, receded
@@ -1273,10 +1154,7 @@ function applyFilters() {
     active[i] = ok ? 1 : 0;
     if (ok) n++;
   }
-  if (DETAIL) {
-    for (let i = 0; i < N; i++) if (!active[i] && recordSlot[i] >= 0) releaseSlot(recordSlot[i]);
-    detailDue = 0;
-  }
+  if (detail) detail.releaseInactive(active);
   stageFilterSweep();
   easeSettled = false;
   $('#count').textContent = `${n.toLocaleString()} of ${N.toLocaleString()}`;
@@ -1363,14 +1241,7 @@ function tick() {
 
   pick();
 
-  if (detailFade.size) {
-    for (const [i, v] of detailFade) {
-      const nv = v + (1 - v) * Math.min(1, dt * 4.5);
-      if (nv > 0.998) { aToPos.array[i * 4 + 3] = 1; detailFade.delete(i); }
-      else { detailFade.set(i, nv); aToPos.array[i * 4 + 3] = nv; }
-    }
-    aToPos.needsUpdate = true;
-  }
+  if (detail) detail.stepFade(dt);
 
   // ease per-instance dim/focus toward their targets. `easeSettled` skips the
   // whole 2,619-wide sweep once nothing is moving, which is most of the time.
@@ -1391,11 +1262,7 @@ function tick() {
 
   // re-elect cache holders a few times a second; walking every record and
   // re-uploading the cache texture is not worth doing per frame
-  if (DETAIL) {
-    flushDetail();                       // blit before this frame's render
-    detailDue -= dt;
-    if (detailDue <= 0 && morphCtl.value >= 1) { detailDue = 0.22; updateDetailCache(); }
-  }
+  if (detail) detail.tick(dt, camera, posCur, active, morphCtl.value >= 1);
 
   if (fly) {
     const e = fly.box.t;
@@ -1430,9 +1297,9 @@ function tick() {
   fpsAcc += raw; fpsN++;
   if (fpsAcc >= 0.5) {
     const fps = Math.round(fpsN / fpsAcc);
-    const held = DETAIL ? slotOwner.reduce((a, v) => a + (v >= 0 ? 1 : 0), 0) : 0;
+    const held = detail ? detail.stats.held : 0;
     $('#fps').textContent = `${fps} fps · ${N.toLocaleString()} tiles · 1 draw call` +
-      (DETAIL ? ` · ${held}/${DETAIL_SLOTS} full-res` : '') +
+      (detail ? ` · ${held}/${detail.slots} full-res` : '') +
       (physics?.ready ? ` · ${physics.count.toLocaleString()} rigid bodies` : '');
     fpsAcc = 0; fpsN = 0;
   }
