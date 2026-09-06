@@ -10,3 +10,11 @@ reportlab>=4.0      # build_pdf.py — the print catalogue
 # from frame 1 otherwise. Playwright's bundled ffmpeg cannot decode h264, so without
 # this those records finish un-thumbed rather than failing loudly.
 imageio-ffmpeg>=0.4  # assets.py — frame-1 thumbnails for posterless video
+
+# Optional, and needed only to check the 3D atlas. verify_web.py imports it lazily, so
+# the build stages above run without it. The browser is a separate download that pip
+# does not do for you:
+#     playwright install chromium
+# The headless shell will not serve — a WebGPU swapchain reads back blank without a
+# surface — so it has to be the full Chromium.
+playwright>=1.40     # verify_web.py — headless render of web/ for the baseline check
