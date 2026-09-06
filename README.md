@@ -390,6 +390,13 @@ It has to be served over HTTP. Opening `web/index.html` from disk fails twice ov
 | **Helix** | a spiral column you can fly down |
 | **By model** | the twelve largest models as labelled blocks, the tail rolled into one — small multiples, so block sizes compare directly |
 
+**The detail panel is not a dead end.** Prev/next step through the filtered set in the
+order the tiles were laid out — so *next* means what is next on screen, under whatever sort
+is active, rather than whatever the records happen to be stored as. Arrow keys do the same
+while the panel is open, and the position reads `n of m` within the current filter, not
+within the corpus. The model, tool and style pills apply themselves as filters; the subject
+and kind pills stay inert rather than pretending to be clickable.
+
 **Cluster labels are controls, not captions.** Clicking one in *By model* isolates that
 model and reframes. A heading that tells you a model holds 1,335 records and cannot show
 you them is describing the work rather than doing it. The rolled-up *"12 smaller models"*
@@ -679,6 +686,7 @@ tolerance, and they hold anywhere the code runs:
 | framing | frame each arrangement, let the flight land, and every visible tile must project inside NDC |
 | detail panel | 12 selections must leave **one** history entry, and each must show the record it was asked for |
 | sort | ordering by length is monotonic across the laid-out sequence, and actually moves tiles |
+| detail nav | stepping follows the laid-out order, clamps at both ends, and counts within the filter |
 | labels | every cluster label isolates the model it names and returns exactly the count it claims; the rolled-up tail stays inert |
 | audio | the graph builds, costs nothing while off, 500 impacts in one window make at most 5 voices, each positioned one gets exactly one panner, and the listener follows where it is put |
 

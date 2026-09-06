@@ -417,10 +417,42 @@ def check_detail_panel(page, runs=12):
     if empty:
         sys.exit(f"detail panel: copy offered for a record with no prompt text, "
                  f"e.g. {empty[:3]}")
+    nav = page.evaluate("""() => {
+      const A = window.__atlas;
+      A.clearHighlight();
+      A.setLayout('grid', true);
+      A.setFilter('portrait');                 // a set small enough to walk to the end
+      const order = A.order();
+      A.select(order[0]);
+      const atStart = A.nav;
+      const walked = [];
+      for (let k = 0; k < 5; k++) { A.step(1); walked.push(A.panel.selected); }
+      A.select(order[order.length - 1]);
+      const atEnd = A.nav;
+      A.closePanel(); A.clearHighlight();
+      return { n: order.length, expected: order.slice(1, 6), walked, atStart, atEnd };
+    }""")
+    # Stepping has to follow the order tiles were laid out in, not the order records
+    # happen to be stored in — otherwise "next" means something different from what
+    # is on screen, which is worse than having no next at all.
+    if nav["walked"] != nav["expected"]:
+        sys.exit(f"detail panel: stepping did not follow the laid-out order — got "
+                 f"{nav['walked']}, expected {nav['expected']}")
+    if not nav["atStart"]["prevDisabled"] or nav["atStart"]["nextDisabled"]:
+        sys.exit(f"detail panel: at the first record, prev should be the only one "
+                 f"disabled ({nav['atStart']})")
+    if nav["atEnd"]["prevDisabled"] or not nav["atEnd"]["nextDisabled"]:
+        sys.exit(f"detail panel: at the last record, next should be the only one "
+                 f"disabled ({nav['atEnd']})")
+    if not nav["atStart"]["pos"].endswith(str(nav["n"])):
+        sys.exit(f"detail panel: position reads {nav['atStart']['pos']!r} for a set of "
+                 f"{nav['n']} — it should count within the filtered set")
+
     nprompt = sum(1 for s in res["seen"] if s["promptLen"] > 0)
     print(f"  detail panel: {len(res['seen'])} records shown correctly, "
           f"{res['pushed']} history entry for all of them "
-          f"({nprompt} with prompt text), closes clean")
+          f"({nprompt} with prompt text), closes clean; "
+          f"steps the filtered set in order, {nav['atStart']['pos']}")
 
 
 def check_framing(page, modes=("grid", "sphere", "helix", "clusters")):
