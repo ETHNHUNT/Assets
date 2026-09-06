@@ -292,6 +292,42 @@ def compare(base, cur, tol):
     return rows, worst
 
 
+def audit_baseline(path):
+    """Say whether `path` is a baseline this build can be checked against.
+
+    Returns None when it is, or a one-line reason when it is not. The scene set is part
+    of the contract, not a detail: SCENES grows whenever a subsystem needs covering, and
+    a baseline captured before that growth makes compare() report the new scenes as
+    MISSING on every single run. That is a stale baseline, not a regression, and the two
+    have to be told apart before a red build can mean anything — so this answers the
+    question without launching a browser, cheaply enough for CI to ask first and decide
+    whether to check or to re-capture.
+
+    It takes the backend at face value, since it does not render: the caller that cares
+    (CI) passes --backend explicitly, and capture()'s driver-missing downgrade cannot
+    apply to a run that never starts one.
+    """
+    rel = os.path.relpath(path, ROOT)
+    if not os.path.exists(path):
+        return f"no baseline at {rel}"
+    try:
+        base = json.load(open(path))
+    except (ValueError, OSError) as e:
+        return f"{rel} is not readable as a baseline: {e}"
+    have = set(base.get("scenes") or {})
+    want = {name for name, _mode, _cam, _steps in SCENES}
+    missing, extra = sorted(want - have), sorted(have - want)
+    if missing or extra:
+        why = []
+        if missing:
+            why.append("does not cover " + ", ".join(missing))
+        if extra:
+            why.append("covers scenes no longer defined: " + ", ".join(extra))
+        return (f"{rel} is stale — it has {len(have)} scene(s) against the {len(want)} "
+                f"this harness defines, and {'; '.join(why)}")
+    return None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--update", action="store_true", help="write the baseline instead of checking")
@@ -300,12 +336,25 @@ def main():
                     help="name this machine, e.g. --tag mbp. Signatures from different "
                          "GPUs are not comparable, so each machine keeps its own baseline.")
     ap.add_argument("--baseline", default=None, help="explicit baseline path, overriding --tag")
+    ap.add_argument("--audit-baseline", action="store_true",
+                    help="render nothing: just report whether the baseline this run would "
+                         "check against exists and covers today's scene set. Exits 0 when it "
+                         "does, 1 with the reason when it does not, so a build can tell a "
+                         "stale baseline from a real regression before it renders anything.")
     ap.add_argument("--tolerance", type=int, default=3,
                     help="max per-cell luma difference (0-255) still considered unchanged. "
                          "Run-to-run noise on one machine is 0, so this is deliberately tight; "
                          "a real 1.3%% layout shift reads 14. Do not raise it to make a failure "
                          "go away — re-capture instead, and only for a browser or driver change.")
     a = ap.parse_args()
+
+    if a.audit_baseline:
+        path = a.baseline or baseline_path(a.backend, a.tag)
+        why = audit_baseline(path)
+        if why:
+            sys.exit(why)
+        print(f"{os.path.relpath(path, ROOT)} covers all {len(SCENES)} scenes")
+        return
 
     print(f"atlas visual check ({'capturing baseline' if a.update else 'checking'})")
     cur, backend, errors = capture(a.backend, SCENES)

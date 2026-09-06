@@ -567,6 +567,7 @@ testable and what a bug report should narrow with before it is filed:
 | `?audio=0` | silent, and no audio context is created |
 | `?physics=0` | physics mode refuses to start |
 | `?seed=<int>` | seed the randomness instead of leaving it to `Math.random()` |
+| `?physmax=<n>` | cap how many tiles become rigid bodies |
 
 The first six only ever subtract, so the bare URL is always the full experience. `?seed`
 subtracts something else — nondeterminism. Physics spins every body randomly and the dust
@@ -614,6 +615,40 @@ signal is a deliberate ~1% perturbation of that scene's own code:
 The default tolerance of **3** sits above every noise floor and well below every signal.
 Layout scenes reproduce exactly; physics and the detail cache carry a little float and
 decode noise, so a tolerance of 0 would be unusable.
+
+### Why the physics body count is not capped on desktop
+
+`PHYS_MAX` is 1,200 on a coarse pointer and unlimited otherwise, and it is worth
+recording why the desktop case was left alone, because the obvious measurement argues
+for capping it and is wrong.
+
+Stepping the solver in a tight loop says the cost is alarming — and it climbs faster
+than the body count, because contact pairs do:
+
+| Bodies | Median step | p95 | Peak |
+|---|---|---|---|
+| 2,936 | 4.9 ms | 12.1 ms | **16.2 ms** |
+| 2,000 | 2.7 ms | 7.0 ms | 8.5 ms |
+| 1,500 | 1.9 ms | 4.8 ms | 5.8 ms |
+| 1,200 | 1.4 ms | 3.8 ms | 4.6 ms |
+
+A 16.2 ms step is the whole frame budget, so capping looks obviously correct. It is not.
+Driven by rAF the way the app actually runs it, over 240 frames of the collapse:
+
+| Cap | Median frame | p95 | Worst | Frames >20 ms | Frames >33 ms |
+|---|---|---|---|---|---|
+| none (2,936) | 16.7 ms | 18.8 ms | 21.6 ms | 1 | **0** |
+| 2,000 | 16.6 ms | 18.8 ms | 19.9 ms | 0 | **0** |
+| 1,500 | 16.7 ms | 18.8 ms | 20.2 ms | 1 | **0** |
+
+Full count holds 60 fps and never drops to 30. Capping buys nothing measurable, and costs
+tiles out of the pile.
+
+The tight loop lied because it advanced the simulation about five times faster than real
+time, packing the bodies into contact configurations that one-step-per-frame never
+reaches. The lesson generalises: benchmark the loop the app actually runs, not the one
+that is convenient to write. `?physmax=<n>` exists so this can be re-measured rather than
+re-argued — on a slower GPU the answer may differ.
 
 Two things the physics scene needs in order to be comparable at all. `?seed=<int>` replaces
 the `Math.random()` spin given to each body, and each `startPhysics()` draws a fresh stream
