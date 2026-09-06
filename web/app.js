@@ -421,6 +421,10 @@ async function boot() {
         return { ids: [...compareSet], shown: $('#dcompare').hidden ? 0 : $('#dcompare').children.length,
                  singleHidden: $('#dsingle').hidden, name: $('#dname').textContent };
       },
+      /** Drive the keyboard cursor, as the arrow keys do. */
+      cursor(delta) { moveCursor(delta); return { at: kbAt, said: $('#say').textContent }; },
+      get cursorAt() { return kbAt; },
+      get announced() { return $('#say').textContent; },
       get nav() {
         return { pos: $('#dpos').textContent,
                  prevDisabled: $('#dprev').disabled, nextDisabled: $('#dnext').disabled };
@@ -478,6 +482,15 @@ async function initRenderer() {
   renderer = new THREE.WebGPURenderer({ antialias: true, alpha: false, forceWebGL });
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   renderer.setSize(innerWidth, innerHeight);
+  // A canvas with no attributes is invisible to assistive technology and takes no
+  // keyboard focus, which for a corpus reachable only by clicking tiles meant the
+  // whole of it was unreachable without a pointer. Focusable and named, so arrow
+  // keys have somewhere to land and a screen reader has something to announce.
+  const cv = renderer.domElement;
+  cv.tabIndex = 0;
+  cv.setAttribute('role', 'application');
+  cv.setAttribute('aria-label',
+    'Prompt atlas. Arrow keys move between records, Enter opens one, Escape closes.');
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.06;
   document.body.appendChild(renderer.domElement);
@@ -1145,6 +1158,7 @@ function selectIndex(i) {
   $('#dfull').textContent = r.f ? 'Full-resolution original ↗' : '';
   $('#dfull').href = r.f || '#';
   $('#detail').classList.add('open');
+  say(`Opened ${r.n || r.t || 'prompt'}. ${r.p ? r.w + ' words.' : 'No prompt text.'}`);
   // One history entry for the panel, not one per record: on a phone the panel
   // is a full-screen takeover and Back is how you expect to leave it, but
   // stepping back through forty records to exit is not what anyone means.
@@ -1285,6 +1299,42 @@ function renderCompare() {
   updateDetailNav();
 }
 
+/** Announce something to a screen reader without putting it on screen. */
+function say(text) { $('#say').textContent = text; }
+
+/**
+ * The keyboard cursor over the filtered set.
+ *
+ * Held as a record index rather than a position, so it survives a re-sort or a filter
+ * that changes what is on screen: the tile you were on stays the tile you are on if
+ * it is still there, and the cursor falls back to the start if it is not.
+ *
+ * It drives `hovered`, so the tile under the cursor lights up exactly as it would
+ * under a pointer — one highlight, not a second one that has to be kept in step.
+ */
+let kbAt = -1;
+
+function moveCursor(delta) {
+  const list = activeList();
+  if (!list.length) return;
+  const at = kbAt < 0 ? -1 : list.indexOf(kbAt);
+  let next = at < 0 ? 0 : at + delta;
+  next = Math.max(0, Math.min(list.length - 1, next));
+  kbAt = list[next];
+  hovered = kbAt;
+  highlight.invalidate();
+  const r = DATA.records[kbAt];
+  say(`${r.n || r.t || 'Prompt'}, ${r.m || 'no model'}, ${r.w || 0} words. `
+      + `${next + 1} of ${list.length}.`);
+}
+
+/** How far one row is, so up and down mean a row rather than a tile. */
+function cursorStride() {
+  if (mode !== 'grid') return 1;
+  const n = activeList().length || 1;
+  return Math.max(1, Math.round(Math.sqrt(n * viewAspect(1.9))));
+}
+
 function closeDetail(fromPop) {
   selected = -1;
   if (compareSet.length) clearCompare();
@@ -1405,9 +1455,26 @@ function buildUI() {
 
   addEventListener('keydown', (e) => {
     if (e.key === 'Escape') { closeDetail(); $('#q').blur(); }
-    if ($('#detail').classList.contains('open') && document.activeElement !== $('#q')) {
-      if (e.key === 'ArrowLeft') { e.preventDefault(); stepDetail(-1); }
-      if (e.key === 'ArrowRight') { e.preventDefault(); stepDetail(1); }
+    if (document.activeElement === $('#q')) return;
+    const open = $('#detail').classList.contains('open');
+    // With a record open the arrows step the panel; otherwise they walk the scene.
+    // Same keys, and the difference is what is in front of you, which is what anyone
+    // would expect them to do.
+    const step = { ArrowLeft: -1, ArrowRight: 1,
+                   ArrowUp: -cursorStride(), ArrowDown: cursorStride() }[e.key];
+    if (step !== undefined) {
+      e.preventDefault();
+      if (open) stepDetail(Math.sign(step));
+      else moveCursor(step);
+      return;
+    }
+    if ((e.key === 'Enter' || e.key === ' ') && !open && kbAt >= 0) {
+      e.preventDefault(); selectIndex(kbAt);
+    }
+    // 1-4 pick an arrangement, in the order they appear in the rail
+    if (/^[1-9]$/.test(e.key)) {
+      const b = $('#modes').children[+e.key - 1];
+      if (b) { e.preventDefault(); b.click(); }
     }
     if (e.key === '/' && document.activeElement !== $('#q')) { e.preventDefault(); $('#q').focus(); }
     if ((e.key === 'i' || e.key === 'I') && document.activeElement !== $('#q')) {
@@ -1463,6 +1530,8 @@ function applyFilters() {
   highlight.stageSweep(posCur, controls.target);
   highlight.invalidate();
   if ($('#detail').classList.contains('open')) updateDetailNav();
+  if (kbAt >= 0 && !active[kbAt]) kbAt = -1;      // the cursor left the visible set
+  say(`${n.toLocaleString()} of ${N.toLocaleString()} records shown.`);
   syncURL();
   $('#count').textContent = `${n.toLocaleString()} of ${N.toLocaleString()}`;
   $('#empty').classList.toggle('on', n === 0);

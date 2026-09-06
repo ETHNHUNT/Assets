@@ -81,6 +81,8 @@ select:focus{border-color:var(--acc)}
 #dcompare .cmp .cx{background:none;border:0;color:var(--dim);cursor:pointer;
   font-size:15px;padding:0 4px;align-self:flex-start}
 #dcompare .cmp .cx:hover{color:var(--fg)}
+.sr{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;
+  clip:rect(0 0 0 0);white-space:nowrap;border:0}
 .dnav{display:flex;align-items:center;gap:2px}
 .dnav button{background:none;border:0;color:var(--dim);font-size:19px;line-height:1;
   padding:1px 7px;cursor:pointer;border-radius:6px}
@@ -217,6 +219,7 @@ kbd{background:#141822;border:1px solid var(--line);border-radius:4px;padding:0 
 <div id="empty">Nothing matches these filters.</div>
 <div id="tip"></div>
 
+<p id="say" class="sr" aria-live="polite" role="status"></p>
 <aside id="detail">
   <div class="dhead">
     <h2 id="dname"></h2>

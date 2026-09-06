@@ -390,6 +390,18 @@ It has to be served over HTTP. Opening `web/index.html` from disk fails twice ov
 | **Helix** | a spiral column you can fly down |
 | **By model** | the twelve largest models as labelled blocks, the tail rolled into one — small multiples, so block sizes compare directly |
 
+**Everything is reachable from the keyboard**, which it was not. The arrows used to work
+only once a record was open, and opening one needed a click — so all 2,936 records were
+unreachable without a pointer. That is not a missing convenience, it is the whole dataset.
+
+The canvas takes focus and is named, arrows walk the filtered set in laid-out order, `Enter`
+opens, `1`–`4` pick an arrangement, `/` searches and `Escape` closes. A polite live region
+announces what a filter left and what opening a record showed, because a count that only
+exists as pixels is a count some people do not have.
+
+The cursor is held as a record index rather than a position, so it survives a re-sort, and
+lets go rather than pointing at something no longer on screen when a filter excludes it.
+
 **Shift-click compares.** Hold shift or cmd and click two to six tiles and the rail shows
 their prompts one under another, with the model and word count on each — which is the thing
 a prompt library is actually for, and the one action the atlas could not do. One record open
@@ -701,6 +713,7 @@ tolerance, and they hold anywhere the code runs:
 | framing | frame each arrangement, let the flight land, and every visible tile must project inside NDC |
 | detail panel | 12 selections must leave **one** history entry, and each must show the record it was asked for |
 | sort | ordering by length is monotonic across the laid-out sequence, and actually moves tiles |
+| keyboard | the canvas is focusable and named, the cursor walks the laid-out order, clamps at the ends, and releases when a filter excludes it |
 | compare | two or more records switch the rail, every one is shown, the cap of six holds, and opening a record clears it |
 | url | a view driven in one page reopens identically in a fresh one, from the link alone |
 | detail nav | stepping follows the laid-out order, clamps at both ends, and counts within the filter |
