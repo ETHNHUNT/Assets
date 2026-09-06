@@ -371,8 +371,23 @@ async function boot() {
        * everything else still draws.
        */
       setFilter(q) { $('#q').value = q; applyFilters(); return $('#count').textContent; },
+      /**
+       * Reorder and lay out instantly.
+       *
+       * The select itself animates — a non-instant layout, which the solver now drives —
+       * but a test wants the ordering, not the transit, and a capture taken while 2,936
+       * springs are still converging depends on how many frames happened to elapse.
+       * That is what made this scene wobble by maxD 4 when every other one sat at 0:
+       * it was the only scene reaching a non-instant path. physics-transit covers the
+       * motion; this covers the order.
+       */
+      setSort(k) { sortBy = k; $('#f-sort').value = k; layout(null, true); },
+      /** The order tiles were laid out in, which is the thing a sort has to change. */
+      order() { return activeList(); },
+      wordCounts(ids) { return ids.map((i) => DATA.records[i].w || 0); },
       hover(i) { hovered = i; highlight.invalidate(); },
-      clearHighlight() { hovered = -1; selected = -1; $('#q').value = ''; applyFilters(); },
+      clearHighlight() { hovered = -1; selected = -1; sortBy = '';
+        $('#q').value = ''; applyFilters(); },
 
       /**
        * Open and close the detail panel the way a click and Escape do.
@@ -667,10 +682,45 @@ const MODES = {
 };
 
 /** Indices that currently pass the filters, in atlas order. */
+/**
+ * How tiles are ordered within an arrangement.
+ *
+ * There was always an order — the build sorts by tool type then model — but it was
+ * fixed and invisible, which for a 2,936-item reference library reads the same as no
+ * order at all. You cannot scan a wall you cannot predict.
+ *
+ * Name is deliberately absent: `n` is populated on 764 of 2,936 records, so sorting
+ * by it would leave three quarters of the atlas in an arbitrary tail. Nor is there a
+ * date to sort by; the records carry no timestamp.
+ *
+ * Every comparator ends in `a - b` so ties keep atlas order and the result is total —
+ * an unstable ordering would make the same filter lay out differently between runs.
+ */
+const SORTS = {
+  '': null,                                   // atlas order: tool, then model
+  // Presets publish no prompt at all, so `w` is absent on 538 records. Zero is the
+  // honest reading of that rather than a missing value to shuffle to the end: they
+  // genuinely have no words, and they belong at the short end where you would look.
+  length: (a, b) => (DATA.records[a].w || 0) - (DATA.records[b].w || 0) || a - b,
+  model: (a, b) => cmpText(DATA.records[a].m, DATA.records[b].m) || a - b,
+  tool: (a, b) => cmpText(DATA.records[a].t, DATA.records[b].t) || a - b,
+};
+
+/** Blank last rather than first: an unattributed record is not the letter A. */
+function cmpText(x, y) {
+  if (!x && !y) return 0;
+  if (!x) return 1;
+  if (!y) return -1;
+  return x.localeCompare(y);
+}
+
+let sortBy = '';
+
 function activeList() {
   const a = [];
   for (let i = 0; i < N; i++) if (active[i]) a.push(i);
-  return a;
+  const cmp = SORTS[sortBy];
+  return cmp ? a.sort(cmp) : a;
 }
 
 /**
@@ -1062,6 +1112,7 @@ function buildUI() {
     el.onchange = applyFilters;
   }
   $('#f-kind').onchange = applyFilters;
+  $('#f-sort').onchange = () => { sortBy = $('#f-sort').value; layout(null); };
   $('#reset').onclick = resetFilters;
   $('#q').oninput = debounce(applyFilters, 180);
   if (SMALL) $('#q').placeholder = 'Search prompts\u2026';   // the long one truncates

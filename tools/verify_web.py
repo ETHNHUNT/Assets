@@ -127,6 +127,10 @@ SCENES = [
     # its post-condition rather than by its signature — the pixels are captured too,
     # but they are not what would fail.
     ("filter-cleared", "grid",   (0, 0, 96),    None, {"filter": "portrait", "clear": True}),
+    # A grid ordered by prompt length rather than by tool. Short prompts and the 538
+    # presets that publish none gather at one end, so the wall gains a gradient a
+    # signature can see — which the default order does not have.
+    ("sorted-length",  "grid",   (0, 0, 96),    None, {"sort": "length"}),
 ]
 
 # Any fixed value works; it only has to be the same one the baseline was captured with.
@@ -151,6 +155,56 @@ def serve(port):
     httpd = socketserver.TCPServer(("127.0.0.1", port), Handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     return httpd
+
+
+def check_sort(page):
+    """A sort has to actually reorder, and the order has to be the one it claims.
+
+    The atlas was always ordered — the build sorts by tool then model — but fixed and
+    invisible, which on 2,936 tiles reads the same as unordered. So the thing to check
+    is not that a control exists but that the laid-out sequence obeys it.
+
+    Monotonicity is the assertion for length, because it is checkable rather than
+    merely different: every tile's word count must be at least the one before it. And
+    the order must genuinely change, or a comparator that quietly returned 0 would
+    pass a monotonicity test on data that happened to arrive sorted.
+    """
+    res = page.evaluate("""() => {
+      const A = window.__atlas;
+      A.clearHighlight();
+      A.setLayout('grid', true);
+
+      A.setSort('');
+      const base = A.order();
+      A.setSort('length');
+      const byLen = A.order();
+      const w = A.wordCounts(byLen);
+
+      let drops = 0, firstDrop = null;
+      for (let i = 1; i < w.length; i++) {
+        if (w[i] < w[i - 1]) { drops++; if (!firstDrop) firstDrop = [i, w[i - 1], w[i]]; }
+      }
+      let moved = 0;
+      for (let i = 0; i < base.length; i++) if (base[i] !== byLen[i]) moved++;
+
+      A.setSort('model');
+      const byModel = A.order();
+      A.setSort('');
+      return { n: byLen.length, drops, firstDrop, moved,
+               first: w.slice(0, 3), last: w.slice(-3),
+               modelChanged: byModel.some((v, i) => v !== base[i]) };
+    }""")
+    if res["drops"]:
+        sys.exit(f"sort: prompt length is not monotonic across the laid-out order — "
+                 f"{res['drops']} places where a tile has fewer words than the one "
+                 f"before it, first at index {res['firstDrop']}")
+    if res["moved"] < res["n"] * 0.5:
+        sys.exit(f"sort: only {res['moved']} of {res['n']} tiles changed place when "
+                 f"sorting by length. The comparator is barely reordering anything.")
+    if not res["modelChanged"]:
+        sys.exit("sort: ordering by model produced the atlas order unchanged")
+    print(f"  sort: {res['n']} tiles ordered by length, monotonic, "
+          f"{res['moved']} moved (from {res['first']} to {res['last']} words)")
 
 
 def check_audio(page, bursts=500):
@@ -675,13 +729,16 @@ def capture(backend, scenes, timeout_s=90):
                 # delays — which is the one code path these scenes exist to cover.
                 # Turn it back on for them only.
                 page.evaluate("() => { window.__atlas.highlight.reduced = false; }")
+                if "sort" in setup:
+                    page.evaluate("([k]) => window.__atlas.setSort(k)", [setup["sort"]])
                 if "filter" in setup:
                     shown = page.evaluate("([q]) => window.__atlas.setFilter(q)",
                                           [setup["filter"]])
                     print(f"  {name}: filter {setup['filter']!r} -> {shown}")
                 if "hover" in setup:
                     page.evaluate("([i]) => window.__atlas.hover(i)", [setup["hover"]])
-                settle_highlight(page, name, expect_moved="clear" not in setup)
+                if "sort" not in setup:
+                    settle_highlight(page, name, expect_moved="clear" not in setup)
                 if setup.get("clear"):
                     page.evaluate("() => window.__atlas.clearHighlight()")
                     assert_all_lit(page, name)
@@ -703,6 +760,7 @@ def capture(backend, scenes, timeout_s=90):
         check_framing(page)
         check_detail_panel(page)
         check_audio(page)
+        check_sort(page)
         browser.close()
     httpd.shutdown()
     if errors:
