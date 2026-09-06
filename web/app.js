@@ -11,11 +11,7 @@
  *           33.3 for Jolt.
  */
 import * as THREE from 'three/webgpu';
-import {
-  attribute, uv, vec2, vec3, vec4, float, texture, mix, smoothstep, step as tslStep,
-  positionLocal, uniform, normalize,
-  pass, mrt, output,
-} from 'three/tsl';
+import { vec4, uniform, pass, mrt, output } from 'three/tsl';
 import { bloom } from 'three/addons/tsl/display/BloomNode.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { animate, createSpring } from 'animejs';
@@ -25,6 +21,7 @@ import { MorphController } from './morph.js';
 import { computeLayout, FLAT } from './layouts.js';
 import { Picker } from './picking.js';
 import { CameraFlight, fitDistance } from './camera.js';
+import { tileMaterial } from './material.js';
 import { DetailCache } from './detail.js';
 import { Highlight } from './highlight.js';
 
@@ -492,7 +489,8 @@ function buildScene() {
     });
   }
 
-  mesh = new THREE.InstancedMesh(geo, tileMaterial(), N);
+  mesh = new THREE.InstancedMesh(geo,
+    tileMaterial({ atlas: ATLAS, perRow: PER_ROW, detail, uMorph }), N);
   mesh.frustumCulled = false;
   // placement lives entirely in positionNode now; instanceMatrix stays identity
   const _id = new THREE.Matrix4();
@@ -512,78 +510,6 @@ function buildScene() {
   if (FLAGS.dust) addDust();
 }
 
-function tileMaterial() {
-  const mat = new THREE.MeshBasicNodeMaterial({ side: THREE.DoubleSide });
-
-  const meta = attribute('aMeta', 'vec4');
-  const dim = meta.y, foc = meta.z;
-  const toPD = attribute('aToPos', 'vec4');   // xyz = to-position, w = detail cross-fade
-
-  // An integer index reaches the fragment stage as an interpolated float, and
-  // fp32 can land it a hair either side of a whole number — floor()/mod() then
-  // resolve neighbouring cells for the quad's two triangles, splitting the tile
-  // along its diagonal. Snapping to the nearest integer first makes it exact.
-  const snap = (v) => v.add(float(0.5)).floor();
-
-  // flipY is off on both textures, so row 0 is the top of the image
-  const cellLocal = vec2(uv().x, uv().y.oneMinus());
-
-  const per = float(PER_ROW);
-  const cell = snap(meta.x);
-  const auv = vec2(cell.mod(per), cell.div(per).floor()).add(cellLocal).div(per);
-
-  let base = texture(ATLAS, auv).rgb;
-
-  if (detail) {
-    // Both textures are sampled and mixed rather than branched: a per-instance
-    // branch diverges across a wavefront for no saving on two texture reads.
-    const dper = float(detail.perRow);
-    const det = meta.w;
-    const dsnap = snap(det);
-    const duv = vec2(dsnap.mod(dper), dsnap.div(dper).floor()).add(cellLocal).div(dper);
-    // cross-fade rather than switch, so sharpening is felt instead of seen
-    base = mix(base, texture(detail.texture, duv).rgb, tslStep(float(0), det).mul(toPD.w));
-  }
-  const lum = base.r.mul(0.299).add(base.g.mul(0.587)).add(base.b.mul(0.114));
-  const ghost = vec3(lum.mul(0.30), lum.mul(0.33), lum.mul(0.46));   // cold, receded
-  const lit = mix(ghost, base, dim).add(vec3(0.15, 0.17, 0.28).mul(foc));
-  mat.colorNode = vec4(lit, 1.0);
-
-  // What this tile contributes to the bloom target: the focused record glows,
-  // and each thumbnail's own highlights lift a little so the wall reads as lit
-  // rather than as a texture sheet. Filtered-out tiles contribute nothing.
-  const highlight = smoothstep(float(0.62), float(1.0), lum).mul(0.42);
-  const glow = foc.mul(0.85).add(highlight).mul(dim);
-  mat.mrtNode = mrt({ emissive: vec4(lit.mul(glow), 1.0) });
-
-  // rounded corners, so the wall reads as tiles rather than a texture sheet
-  const R = float(0.07);
-  const d = uv().sub(0.5).abs().sub(vec2(float(0.5).sub(R), float(0.5).sub(R)))
-    .max(vec2(0, 0)).length().sub(R);
-  mat.opacityNode = float(1).sub(smoothstep(float(-0.006), float(0.006), d));
-  mat.alphaTest = 0.5;
-
-  // filtered-out tiles shrink back; the hovered one lifts toward the viewer
-  const s = float(1).add(foc.mul(0.30)).mul(mix(float(0.40), float(1.0), dim));
-
-  // Per-instance local time: each tile starts at its own delay and still lands
-  // on 1, so the arrangement resolves as a wave instead of a switch.
-  const fromPD = attribute('aFromPD', 'vec4');
-  const delay = fromPD.w;
-  const span = float(1).sub(delay).max(float(0.001));
-  const tl = uMorph.sub(delay).div(span).clamp(0, 1);
-  const e = tl.mul(tl).mul(float(3).sub(tl.mul(2)));      // smoothstep: settles, no overshoot
-
-  const pos = mix(fromPD.xyz, toPD.xyz, e);
-  // nlerp rather than slerp — indistinguishable at these angles and far cheaper
-  const q = normalize(mix(attribute('aQuatA', 'vec4'), attribute('aQuatB', 'vec4'), e));
-
-  // rotate the scaled quad by q:  v + 2*w*(qv x v) + 2*(qv x (qv x v))
-  const v = positionLocal.mul(vec3(s, s, float(1)));
-  const t2 = q.xyz.cross(v).mul(2);
-  mat.positionNode = v.add(t2.mul(q.w)).add(q.xyz.cross(t2)).add(pos);
-  return mat;
-}
 
 function addDust() {
   const n = 2600, p = new Float32Array(n * 3), dr = stream();
