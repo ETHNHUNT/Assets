@@ -24,6 +24,7 @@ import { PhysicsWorld } from './physics.js';
 import { MorphController } from './morph.js';
 import { computeLayout, FLAT } from './layouts.js';
 import { Picker } from './picking.js';
+import { CameraFlight, fitDistance } from './camera.js';
 import { DetailCache } from './detail.js';
 import { Highlight } from './highlight.js';
 
@@ -76,6 +77,12 @@ function mulberry32(a) {
 }
 /** A fresh stream, so a caller's sequence does not depend on who drew before it. */
 const stream = () => FLAGS.seed === null ? Math.random : mulberry32(FLAGS.seed);
+
+// Read here rather than beside the code that honours it: three separate subsystems ask
+// — the morph shortens to nothing, the highlight sweep drops its stagger, and a camera
+// flight lands in 1 ms — and it was previously declared several hundred lines below the
+// first of them, which works only because nothing reads it before boot() runs.
+const REDUCED = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 // ---------------------------------------------------------------- boot ------
 const $ = (s) => document.querySelector(s);
@@ -152,8 +159,6 @@ let hovered = -1, selected = -1;
 let mode = 'grid';
 let highlight = null;                    // owns aMeta.y/.z; see web/highlight.js
 
-const _pa = new THREE.Vector3(), _pb = new THREE.Vector3();
-const _qa = new THREE.Quaternion(), _qb = new THREE.Quaternion();
 
 async function fetchJSON(url, label) {
   const res = await fetch(url);
@@ -228,7 +233,7 @@ async function boot() {
        * choice rather than a bug.
        */
       frameAll(dir) { frameCamera(dir); },
-      get flying() { return fly !== null; },
+      get flying() { return flight.active; },
 
       /** Where tile i's centre lands in NDC, given the camera as it stands. */
       project(i) {
@@ -340,8 +345,7 @@ async function boot() {
         // A camera flight outranks anything written to camera.position: tick() re-derives
         // the position from `fly` on every frame until the animation ends. One is still
         // running for a second or so after boot, which is what the drift actually was.
-        if (flyAnim) { flyAnim.pause(); flyAnim = null; }
-        fly = null;
+        flight.cancel();
         clearTimeout(physFrameTimer);
         controls.enableDamping = false;
         camera.position.set(x, y, z);
@@ -446,6 +450,7 @@ function buildScene() {
   camera.position.set(0, 8, 96);
 
   controls = new OrbitControls(camera, renderer.domElement);
+  flight = new CameraFlight({ camera, controls, reduced: REDUCED });
   controls.enableDamping = true;
   controls.dampingFactor = 0.075;
   controls.rotateSpeed = 0.55;
@@ -796,7 +801,6 @@ function layout(next, instant) {
 
 /** Physics owns the positions while it runs: push them straight to the B slot. */
 
-const REDUCED = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 /** A short hop and a full re-arrangement should not take the same time. */
 
@@ -954,7 +958,7 @@ function selectIndex(i) {
   // stepping back through forty records to exit is not what anyone means.
   if (pushedDetail) history.replaceState(null, '', '#' + r.id);
   else { history.pushState({ atlas: 1 }, '', '#' + r.id); pushedDetail = true; }
-  flyTo(i);
+  flight.toPoint(new THREE.Vector3(posCur[i * 3], posCur[i * 3 + 1], posCur[i * 3 + 2]));
 }
 
 function selectById(id, instant) {
@@ -979,13 +983,7 @@ function frameCamera(preferDir) {
   for (const L of groupLabels) box.expandByPoint(v.copy(L.pos).addScalar(1.6));
   if (!any) return;
   const centre = box.getCenter(new THREE.Vector3());
-  const size = box.getSize(new THREE.Vector3());
-  const tanV = Math.tan((camera.fov * Math.PI / 180) / 2);
-  const tanH = tanV * camera.aspect;
-  const depth = size.z * 0.5;
-  const dist = Math.max(6,
-    (size.y * 0.5) / tanV + depth,
-    (size.x * 0.5) / tanH + depth) * 1.06;
+  const dist = fitDistance(box.getSize(new THREE.Vector3()), camera.fov, camera.aspect);
   const dir0 = preferDir ? preferDir.clone().normalize()
                          : camera.position.clone().sub(controls.target).normalize();
   if (!isFinite(dir0.x) || dir0.lengthSq() < 1e-6) dir0.set(0, 0.18, 1).normalize();
@@ -998,44 +996,12 @@ function frameCamera(preferDir) {
     const shift = right.multiplyScalar(dist * 0.16);
     toP.add(shift); toT.add(shift);
   }
-  setFly(controls.target.clone(), toT, camera.position.clone(), toP);
+  flight.to(controls.target.clone(), toT, camera.position.clone(), toP);
 }
 
-let fly = null, flyAnim = null, physFrameTimer = 0;
+let flight = null;                       // CameraFlight; see web/camera.js
+let physFrameTimer = 0;
 
-/** Weighted camera move: a spring settles instead of stopping dead. */
-function setFly(fromT, toT, fromP, toP) {
-  if (flyAnim) flyAnim.pause();
-  const fromDir = fromP.clone().sub(fromT);
-  const toDir = toP.clone().sub(toT);
-  const fromR = fromDir.length() || 0.001, toR = toDir.length() || 0.001;
-  fromDir.divideScalar(fromR); toDir.divideScalar(toR);
-  const box = { t: 0 };
-  fly = { box, fromT, toT, fromDir, fromR, toR,
-          turn: new THREE.Quaternion().setFromUnitVectors(fromDir, toDir) };
-  flyAnim = animate(box, {
-    t: 1,
-    duration: REDUCED ? 1 : 1000,
-    ease: REDUCED ? 'linear' : createSpring({ stiffness: 92, damping: 19, mass: 1.1 }),
-    onComplete: () => {
-      // Land it here rather than trusting tick() to have applied t = 1. Under
-      // prefers-reduced-motion the duration is 1 ms, so the animation finishes before
-      // a single frame runs: fly is nulled, the `if (fly)` block never sees it, and
-      // the camera simply never moves. Framing did nothing at all for anyone with
-      // reduced motion enabled — measured, camera unchanged at (0, 8, 96).
-      controls.target.copy(toT);
-      camera.position.copy(toP);
-      fly = null; flyAnim = null;
-    },
-  });
-}
-function flyTo(i) {
-  const a = i * 3;
-  const target = new THREE.Vector3(posCur[a], posCur[a + 1], posCur[a + 2]);
-  const dir = camera.position.clone().sub(controls.target).normalize();
-  setFly(controls.target.clone(), target,
-         camera.position.clone(), target.clone().add(dir.multiplyScalar(9)));
-}
 
 let pushedDetail = false;
 
@@ -1254,16 +1220,7 @@ function tick() {
   // re-uploading the cache texture is not worth doing per frame
   if (detail) detail.tick(dt, camera, posCur, active, morphCtl.value >= 1);
 
-  if (fly) {
-    const e = fly.box.t;
-    controls.target.lerpVectors(fly.fromT, fly.toT, e);
-    // Arc around the target rather than cutting a straight line through the
-    // scene: slerp the view direction, lerp the distance.
-    _qa.identity().slerp(fly.turn, e);
-    _pa.copy(fly.fromDir).applyQuaternion(_qa)
-       .multiplyScalar(fly.fromR + (fly.toR - fly.fromR) * e);
-    camera.position.copy(controls.target).add(_pa);
-  }
+  flight.apply();
 
   if (labelGroup) {
     const a = physics?.ready ? 0 : morphCtl.value;
