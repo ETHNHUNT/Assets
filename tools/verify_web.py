@@ -103,7 +103,7 @@ SCENES = [
     ("sphere",       "sphere",   (0, 10, 120),  None, None),
     ("helix",        "helix",    (0, 0, 130),   None, None),
     ("by-model",     "model",    (0, 20, 150),  None, None),
-    ("physics-pile", "physics",  (0, 6, 120),   240,  None),
+    ("physics-transit", "grid",  (0, 0, 96),    90,   None),
     # Close enough to trip the detail cache. A tile has to cover DETAIL_MIN_PX (74px)
     # before it is worth a full-res load, which works out at roughly 8 units — every
     # other scene here sits at 96 or further, so without this one the LOD path, and the
@@ -665,7 +665,8 @@ def capture(backend, scenes, timeout_s=90):
                     browser.close(); httpd.shutdown()
                     sys.exit(f"scene {name}: physics ran unseeded — the pile is not "
                              "reproducible and the baseline would be noise")
-                print(f"  {name}: {res['bodies']} bodies, {res['steps']} steps")
+                print(f"  {name}: {res['bodies']} bodies, {res['steps']} steps "
+                      f"{res['from']} -> {res['to']}")
             page.evaluate("([x,y,z]) => window.__atlas.park(x,y,z)", [x, y, z])
 
             if setup:

@@ -303,25 +303,25 @@ async function boot() {
       setLayout(m, instant = true) { layout(m, instant); },
 
       /**
-       * Enter physics and advance it a fixed number of steps, synchronously.
+       * Move between two arrangements under the solver, a fixed number of steps in.
        *
-       * The pile cannot be captured the way a layout is. A layout settles and then
-       * holds still, so a test can wait for `settled`; physics never settles, so the
-       * only stable thing to compare is "exactly N steps from a known start". Driving
-       * the steps here rather than letting tick() do it also takes rAF out of the
-       * loop, which a background tab throttles to nothing.
+       * A transit is the thing to capture now, not a pile. It is caught mid-flight on
+       * purpose: `steps` short of settling is where the springs, the momentum and the
+       * collisions are all visible at once, and a settled frame would be identical to
+       * the plain layout and prove nothing about how it got there.
        *
-       * Reproducible only under ?seed — without one the spins are Math.random().
+       * Stepped here rather than from tick() so rAF is out of it — a background tab
+       * throttles that to nothing. Reproducible only under ?seed.
        */
-      async physics(steps = 240, from = 'grid') {
-        // Physics mode seeds itself from wherever the tiles currently are, so without
-        // a known starting layout the pile would depend on which scene ran before it.
-        layout(from, true);
-        layout('physics', true);
+      async physics(steps = 90, from = 'grid', to = 'sphere') {
+        layout(from, true);                       // a known start, whatever ran before
         await startPhysics();
         if (!physics.ready) return null;
+        physics.teleport(morphCtl.posCur, morphCtl.quatCur);
+        layout(to);                               // points the springs somewhere else
         for (let k = 0; k < steps; k++) physics.step();
-        return { bodies: physics.count, steps, seeded: FLAGS.seed !== null };
+        morphCtl.flatten();
+        return { bodies: physics.count, steps, from, to, seeded: FLAGS.seed !== null };
       },
       /**
        * Put the camera somewhere and make it stay there.
@@ -342,6 +342,8 @@ async function boot() {
         // A camera flight outranks anything written to camera.position: tick() re-derives
         // the position from `fly` on every frame until the animation ends. One is still
         // running for a second or so after boot, which is what the drift actually was.
+        cameraLocked = true;
+        controls.autoRotate = false;
         flight.cancel();
         clearTimeout(physFrameTimer);
         controls.enableDamping = false;
@@ -399,6 +401,8 @@ async function boot() {
     };
     step(100, 'ready');
     setTimeout(() => $('#load').classList.add('gone'), 260);
+    // Not awaited: the morph carries motion until the solver is up, then it takes over.
+    startPhysics();
     renderer.setAnimationLoop(tick);
     if (location.hash.length > 1) selectById(location.hash.slice(1), true);
   } catch (e) {
@@ -659,7 +663,7 @@ function buildLabels() {
 
 const MODES = {
   grid: 'Grid', sphere: 'Sphere', helix: 'Helix',
-  clusters: 'By model', physics: 'Physics',
+  clusters: 'By model',
 };
 
 /** Indices that currently pass the filters, in atlas order. */
@@ -718,14 +722,10 @@ function viewAspect(landscape) {
 function layout(next, instant) {
   if (morphCtl.value < 1) morphCtl.bake();   // never jump: start from where they are
   if (next) mode = next;
-  if (mode !== 'physics') stopPhysics();
 
   const list = activeList();
-  // choosePhysList() picks which tiles become bodies and caches it in physList; the
-  // physics arrangement then just reads where those tiles already are.
   const { out, labels } = computeLayout(mode, {
     total: N, list, records: DATA.records, viewAspect, posCur,
-    physList: mode === 'physics' ? choosePhysList() : null,
   });
 
   groupLabels.length = 0;
@@ -734,8 +734,21 @@ function layout(next, instant) {
 
   buildLabels();
   if (!instant) audio.morph();
+
+  // Once the solver is up it owns the motion, for every arrangement rather than for
+  // one of them. Changing layout just points the springs somewhere else, so tiles
+  // accelerate, carry momentum and shoulder past each other on the way — which is
+  // the whole reason to have a solver in a thing like this.
+  //
+  // The morph still runs before Rapier finishes loading, and for instant moves that
+  // a test or a filter asks for. It is the fallback now, not the mechanism.
+  if (physics?.ready && !instant) {
+    physics.setTargets(morphCtl.posTo, morphCtl.quatTo);
+    return;
+  }
   if (instant) {
     morphCtl.settle();
+    if (physics?.ready) physics.teleport(morphCtl.posCur, morphCtl.quatCur);
   } else {
     morphCtl.upload(!REDUCED);
     morphCtl.start(morphCtl.pickDuration(active, REDUCED));
@@ -779,23 +792,33 @@ function makePhysics() {
   });
 }
 
-/** Enter physics: pick the bodies, show the loading bar if the engine is cold. */
-async function startPhysics() {
-  if (!FLAGS.physics) return;            // ?physics=0 — refuse before loading the engine
-  const list = physList || activeList();
-  if (!list.length) return;
-  if (!physics) physics = makePhysics();
+/**
+ * Bring the solver up in the background.
+ *
+ * Rapier is a ~3 MB wasm bundle and motion is not worth delaying first paint for, so
+ * this is deliberately not awaited at boot: the morph carries the first few seconds
+ * and the solver takes over the moment it is ready. Nobody sees a loading bar for it.
+ */
+let physicsBoot = null;
 
-  if (!PhysicsWorld.loaded) {
-    lmsg.textContent = 'loading physics';
-    $('#load').classList.remove('gone');
-    step(30, 'loading physics engine');
+function startPhysics() {
+  if (!FLAGS.physics) return Promise.resolve();   // ?physics=0 — never load the engine
+  // One boot, shared. Called from boot() without awaiting and again from a test, and
+  // two concurrent start()s meant the second freeing a world the first was still
+  // building — a wasm double free, thrown from inside Rapier where the cause is
+  // invisible. Handing every caller the same promise makes the second call a no-op.
+  if (physicsBoot) return physicsBoot;
+  physicsBoot = (async () => {
+    const list = physList || activeList();
+    if (!list.length) return;
+    if (!physics) physics = makePhysics();
     await PhysicsWorld.load();
-    step(100, 'ready');
-    setTimeout(() => $('#load').classList.add('gone'), 200);
-  }
-  await physics.start(list);
-  morphCtl.value = 1;
+    await physics.start(list);
+    physics.teleport(morphCtl.posCur, morphCtl.quatCur);
+    physics.setTargets(morphCtl.posTo, morphCtl.quatTo);
+    morphCtl.value = 1;
+  })();
+  return physicsBoot;
 }
 
 function stopPhysics() { if (physics) physics.stop(); }
@@ -959,6 +982,9 @@ function frameCamera(preferDir) {
 
 let flight = null;                       // CameraFlight; see web/camera.js
 let physFrameTimer = 0;
+// Set once a test places the camera by hand. Nothing may move it after that — not a
+// flight, not idle rotation — or a captured frame stops being reproducible.
+let cameraLocked = false;
 const _fwd = new THREE.Vector3();   // scratch for the audio listener's facing
 
 
@@ -1017,20 +1043,8 @@ function buildUI() {
     if (k === mode) b.classList.add('on');
     b.onclick = async () => {
       [...modes.children].forEach((c) => c.classList.toggle('on', c === b));
-      $('#foot').classList.toggle('phys', k === 'physics');
-      const elevated = new THREE.Vector3(0, 0.62, 1);
-      if (k === 'physics') {
-        layout('physics');
-        await startPhysics();
-        frameCamera(elevated);
-        // the pile spreads as it falls, so fit it again once it has settled
-        clearTimeout(physFrameTimer);
-        physFrameTimer = setTimeout(() => { if (physics?.ready) frameCamera(elevated); }, 2600);
-      }
-      else {
-        layout(k);
-        frameCamera(k === 'clusters' ? new THREE.Vector3(0, 0.13, 1) : undefined);
-      }
+      layout(k);
+      frameCamera(k === 'clusters' ? new THREE.Vector3(0, 0.13, 1) : undefined);
     };
     modes.appendChild(b);
   }
@@ -1121,7 +1135,6 @@ function applyFilters() {
   const wasNarrow = lastCount <= N * 0.25, isNarrow = n <= N * 0.25;
   lastCount = n;
   layout(null);
-  if (mode === 'physics' && n) startPhysics();
   // re-frame when a query meaningfully changes how much is on screen, so a
   // narrow result is not left as a speck in the distance
   if (n && (isNarrow !== wasNarrow || isNarrow)) frameCamera();
@@ -1212,7 +1225,14 @@ function tick() {
     audio.motion(d / Math.max(dt, 1e-3) / 40);
   }
   if (dust) dust.rotation.y += dt * 0.006;
-  const allowAutoRotate = controls.enableDamping && mode === 'sphere' && hovered < 0 && selected < 0 && !flight.active;
+  // `cameraLocked`, not `controls.enableDamping`. Both are false after a park() and
+  // the harness passed either way, but only one of them says what is meant: damping
+  // being off happened to be a side effect of parking, so the determinism of every
+  // sphere baseline rested on park() continuing to disable it. Anyone tidying that
+  // line would have made the baselines quietly irreproducible, with the sphere
+  // drifting a fraction of a degree between capture and check and no clue why.
+  const allowAutoRotate = !cameraLocked && mode === 'sphere'
+    && hovered < 0 && selected < 0 && !flight.active;
   if (controls.autoRotate !== allowAutoRotate) {
     controls.autoRotate = allowAutoRotate;
     controls.autoRotateSpeed = 0.35;

@@ -20,17 +20,16 @@ import * as THREE from 'three';
 export const FLAT = new THREE.Quaternion();
 
 /**
- * @param mode      grid | sphere | helix | physics | clusters
+ * @param mode      grid | sphere | helix | clusters
  * @param total     instance count, i.e. every record whether visible or not
  * @param list      indices of the records currently passing the filters
  * @param records   DATA.records, read for .w (word count) and .m (model)
  * @param viewAspect(landscape) -> aspect to lay out for; lets a layout react to a
  *                  portrait window without this module knowing what a window is
  * @param posCur    current positions — physics alone starts from where tiles are
- * @param physList  which tiles become bodies; only read in physics mode
  * @returns { out, labels }
  */
-export function computeLayout(mode, { total, list, records, viewAspect, posCur, physList }) {
+export function computeLayout(mode, { total, list, records, viewAspect, posCur }) {
   const n = list.length || 1;
   const out = [];
   const labels = [];
@@ -75,11 +74,6 @@ export function computeLayout(mode, { total, list, records, viewAspect, posCur, 
       const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, a, 0));
       out[idx] = [v.x, v.y, v.z, q];
     });
-  } else if (mode === 'physics') {
-    for (const idx of physList) {
-      const a = idx * 3;
-      out[idx] = [posCur[a], posCur[a + 1], posCur[a + 2], FLAT];
-    }
   } else if (mode === 'clusters') {
     const groups = new Map();
     for (const idx of list) {

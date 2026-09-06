@@ -389,7 +389,6 @@ It has to be served over HTTP. Opening `web/index.html` from disk fails twice ov
 | **Sphere** | a shell packed at surface density — the whole corpus at once |
 | **Helix** | a spiral column you can fly down |
 | **By model** | the twelve largest models as labelled blocks, the tail rolled into one — small multiples, so block sizes compare directly |
-| **Physics** | every tile becomes a rigid body and the arrangement collapses into a pile you can shove |
 
 Two toggles sit in the header. **Bloom** is selective post-processing; **sound** is off until you
 ask for it. Both are described below.
@@ -559,7 +558,7 @@ the detail panel — and everything else is its own file:
 | `detail.js` | `DetailCache` — the full-res cell texture, election, cross-fade | 210 |
 | `audio.js` | `AtlasAudio` — procedural sound | 201 |
 | `layouts.js` | the arrangements, as pure maths | 182 |
-| `physics.js` | `PhysicsWorld` — the rigid-body pile | 164 |
+| `physics.js` | `PhysicsWorld` — the solver that moves everything | 164 |
 | `camera.js` | `fitDistance` and `CameraFlight` — how far back, and getting there | 118 |
 | `highlight.js` | `Highlight` — the dim and focus sweep | 115 |
 | `material.js` | the tile shader, as one TSL node graph | 101 |
@@ -667,6 +666,47 @@ never ran — that is the failure this harness has hit three separate times (phy
 disabled by a flag, the LOD cache never electing past ~8 units, the filter stagger
 flattened by `prefers-reduced-motion`). A check that measures nothing is worse than no
 check, because it reports green while a bug walks past.
+
+### Physics is how things move, not a place you go
+
+There used to be a Physics arrangement: switch to it, gravity comes on, the atlas falls
+into a pile on a floor. That demonstrates a physics engine. It is not motion, and it had
+nothing to do with the other five arrangements, which each glided along their own eased
+path with 2,935 tiles they could not see.
+
+The solver now runs for every arrangement and there is no Physics view. No gravity, no
+floor, no walls — each tile is pulled toward wherever the current arrangement wants it by
+a critically damped spring, and the collisions on the way are the point rather than a side
+effect. Switching arrangement re-points the springs, so a rearrangement is a physical
+event: tiles accelerate, carry momentum, shoulder past each other and settle.
+
+The constants are a frequency and a damping ratio rather than a raw `k` and `c`, because
+those are the numbers with meaning. `OMEGA` is how fast a tile converges — 6 rad/s settles
+in about a second — and `ZETA` is whether it overshoots, with 1.0 critical and 0.9 giving
+the arrival a little weight. Those two are the dials worth turning if the motion feels
+wrong. A matching pair drives the torque that rights a tile knocked askew on the way.
+
+Measured on a grid → sphere transit, 2,936 bodies:
+
+| Step | Mean distance to target | Mean speed |
+|---|---|---|
+| 0 | 34.1 | 0 |
+| 15 | 17.2 | 71.9 |
+| 30 | 5.5 | 28.5 |
+| 60 | 0.38 | 2.2 |
+| 90 | 0.03 | 0.14 |
+
+Two things that look like bugs and are not. **Settling is not arriving**: 8 tiles of 2,936
+come to rest up to 1.3 units short, jammed against neighbours that got there first, which
+is the solver being right. So the sleep test is stillness, not arrival — waiting for
+distance to reach zero would wait forever. And **the solver must be put to sleep by hand**:
+Rapier sleeps bodies left alone, but a steering impulse every step is exactly what stops
+them being left alone, so a settled atlas went on costing 1.6 ms a frame for as long as the
+tab was open. Idle is 0 ms now; a transit costs 3 ms a step.
+
+Rapier is a ~3 MB wasm bundle and is still loaded lazily, just no longer on demand — it
+comes up in the background after first paint, with the morph carrying motion until it is
+ready. Nobody waits for a loading bar.
 
 ### Sound, and why it is synthesised rather than sampled
 
