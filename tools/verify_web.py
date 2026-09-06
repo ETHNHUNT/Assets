@@ -218,11 +218,17 @@ def assert_all_lit(page, name, tries=400):
       for (let i = 0; i < h.delay.length; i++) if (h.delay[i] > max) max = h.delay[i];
       return { maxDelay: max, stagger: h.stagger, t: h.t };
     }""")
-    if inv and inv["maxDelay"] >= inv["stagger"]:
-        sys.exit(f"scene {name}: a stagger delay reaches {inv['maxDelay']!r}, which is not "
-                 f"below stagger {inv['stagger']!r}. The timer stops at the first t >= "
-                 f"stagger, so that tile can never satisfy t >= delay and will strand "
-                 f"dark. Clamp the delays.")
+    # Assert the margin, not the boundary. Unclamped, the furthest delay lands within a
+    # rounding step of `stagger` and whether it is above or below depends on that run's
+    # distances — so `maxDelay >= stagger` catches the bug only on the runs where the
+    # float32 rounding happens to go up, which is a test that passes while broken. The
+    # clamp puts it at 0.999 * stagger, three orders of magnitude clear of the rounding,
+    # so a margin check separates clamped from unclamped on every run.
+    if inv and inv["maxDelay"] > inv["stagger"] * 0.9995:
+        sys.exit(f"scene {name}: the largest stagger delay is {inv['maxDelay']!r}, which is "
+                 f"not clear of stagger {inv['stagger']!r}. The timer stops at the first "
+                 f"t >= stagger, so a delay at or near stagger can never satisfy "
+                 f"t >= delay and that tile strands dark. Clamp the delays below stagger.")
 
     dark = page.evaluate("""() => {
       const m = window.__atlas.mesh.geometry.getAttribute('aMeta');
@@ -362,6 +368,11 @@ def capture(backend, scenes, timeout_s=90):
             page.evaluate("([x,y,z]) => window.__atlas.park(x,y,z)", [x, y, z])
 
             if setup:
+                # The page is opened with prefers-reduced-motion so morphs land
+                # instantly, and that also flattens the filter stagger to all-zero
+                # delays — which is the one code path these scenes exist to cover.
+                # Turn it back on for them only.
+                page.evaluate("() => { window.__atlas.highlight.reduced = false; }")
                 if "filter" in setup:
                     shown = page.evaluate("([q]) => window.__atlas.setFilter(q)",
                                           [setup["filter"]])
