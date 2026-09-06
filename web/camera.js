@@ -18,8 +18,8 @@ import { animate, createSpring } from 'animejs';
  * How far from a box's centre the camera must sit for the box to fit.
  *
  * Fitted against both FOV axes rather than a bounding sphere. A sphere with a fudge
- * factor is fine for the sphere arrangement and crops the helix top and bottom and
- * the towers at the sides, because neither is remotely spherical.
+ * factor is fine for the sphere arrangement and crops the helix top and bottom,
+ * which is nothing like spherical.
  *
  * The depth term matters as much as the extents: what has to fit is the near face of
  * the box, not its centre, so half the depth is added back.

@@ -389,7 +389,6 @@ It has to be served over HTTP. Opening `web/index.html` from disk fails twice ov
 | **Sphere** | a shell packed at surface density — the whole corpus at once |
 | **Helix** | a spiral column you can fly down |
 | **By model** | the twelve largest models as labelled blocks, the tail rolled into one — small multiples, so block sizes compare directly |
-| **By length** | a histogram: six labelled towers, from *no prompt text* to *500+ words* |
 | **Physics** | every tile becomes a rigid body and the arrangement collapses into a pile you can shove |
 
 Two toggles sit in the header. **Bloom** is selective post-processing; **sound** is off until you
@@ -409,12 +408,6 @@ pipeline — not screenshotted.*
 ![Sphere arrangement](web/docs/sphere.png)
 
 *All 2,936 records packed into a shell.*
-
-![By length](web/docs/by-length.png)
-
-*By length — six labelled towers. 1,072 records land in the 76–200 word band; the
-538 presets that publish no prompt get their own bucket rather than inflating the
-short one.*
 
 ### How it is built
 
@@ -565,7 +558,7 @@ the detail panel — and everything else is its own file:
 | `morph.js` | `MorphController` — the four position buffers, the A/B upload, the stagger, the anime.js clock | 215 |
 | `detail.js` | `DetailCache` — the full-res cell texture, election, cross-fade | 210 |
 | `audio.js` | `AtlasAudio` — procedural sound | 201 |
-| `layouts.js` | the six arrangements, as pure maths | 182 |
+| `layouts.js` | the arrangements, as pure maths | 182 |
 | `physics.js` | `PhysicsWorld` — the rigid-body pile | 164 |
 | `camera.js` | `fitDistance` and `CameraFlight` — how far back, and getting there | 118 |
 | `highlight.js` | `Highlight` — the dim and focus sweep | 115 |
@@ -621,12 +614,12 @@ What it compares is a **16×16 grid of mean luma**, not raw pixels — a softwar
 and a real GPU disagree in the low bits of every antialiased edge, but they agree on where
 the tiles are.
 
-Eleven scenes, one per writer of the per-instance buffers — that is the selection rule,
+Ten scenes, one per writer of the per-instance buffers — that is the selection rule,
 and the ownership map at the top of `web/app.js` is the list it is drawn from:
 
 | Scene | Covers | Asserts it actually ran |
 |---|---|---|
-| `grid-front`, `grid-angled`, `sphere`, `helix`, `towers`, `by-model` | layout and morph | — |
+| `grid-front`, `grid-angled`, `sphere`, `helix`, `by-model` | layout and morph | — |
 | `physics-pile` | `PhysicsWorld`, `posCur`/`quatCur` | 2,936 bodies, 240 seeded steps, and refuses to record an unseeded pile |
 | `detail-closeup` | the LOD cache, `aToPos.w` and `aMeta.w` | 64/64 cells bound, or the scene fails |
 | `filtered` | the dim lane, `aMeta.y`, mid-wave | at least one lane moved |

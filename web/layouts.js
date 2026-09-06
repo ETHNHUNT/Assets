@@ -20,7 +20,7 @@ import * as THREE from 'three';
 export const FLAT = new THREE.Quaternion();
 
 /**
- * @param mode      grid | sphere | helix | physics | towers | clusters
+ * @param mode      grid | sphere | helix | physics | clusters
  * @param total     instance count, i.e. every record whether visible or not
  * @param list      indices of the records currently passing the filters
  * @param records   DATA.records, read for .w (word count) and .m (model)
@@ -80,37 +80,6 @@ export function computeLayout(mode, { total, list, records, viewAspect, posCur, 
       const a = idx * 3;
       out[idx] = [posCur[a], posCur[a + 1], posCur[a + 2], FLAT];
     }
-  } else if (mode === 'towers') {
-    // ordered buckets, so this is a histogram: five towers you read left to
-    // right, each one image-deep. A ring would hide half of it.
-    // presets publish no prompt at all — counting them as "1–25 words" would
-    // overstate the short bucket by the whole preset catalogue
-    const BUCKETS = ['no prompt text', '1–25 words', '26–75 words', '76–200 words',
-                     '201–500 words', '500+ words'];
-    const bucket = (w) => w <= 0 ? BUCKETS[0] : w <= 25 ? BUCKETS[1] : w <= 75 ? BUCKETS[2]
-      : w <= 200 ? BUCKETS[3] : w <= 500 ? BUCKETS[4] : BUCKETS[5];
-    const groups = new Map(BUCKETS.map((b) => [b, []]));
-    for (const idx of list) groups.get(bucket(records[idx].w)).push(idx);
-
-    const PITCH = 1.4;
-    const dims = BUCKETS.map((b) => {
-      const m = groups.get(b).length;
-      const cols = Math.max(3, Math.round(Math.sqrt(m / 2.4)));
-      return { cols, rows: Math.ceil(m / cols) || 1, w: cols * PITCH };
-    });
-    const gap = PITCH * 3.2;
-    const totalW = dims.reduce((a, d) => a + d.w, 0) + gap * (BUCKETS.length - 1);
-    let x = -totalW / 2;
-    BUCKETS.forEach((b, gi) => {
-      const members = groups.get(b), d = dims[gi];
-      const cx = x + d.w / 2; x += d.w + gap;
-      members.forEach((idx, k2) => {
-        const c = k2 % d.cols, r = Math.floor(k2 / d.cols);
-        out[idx] = [cx + (c - d.cols / 2 + 0.5) * PITCH, r * PITCH, 0, FLAT];   // grows upward
-      });
-      labels.push({ text: b, count: members.length, q: FLAT,
-                         pos: new THREE.Vector3(cx, d.rows * PITCH + 2.4, 0) });
-    });
   } else if (mode === 'clusters') {
     const groups = new Map();
     for (const idx of list) {
