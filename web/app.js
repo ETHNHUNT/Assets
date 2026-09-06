@@ -459,6 +459,7 @@ async function boot() {
       get flags() { return { ...FLAGS }; },
       get counts() { return { instances: N, active: active.reduce((a, v) => a + v, 0) }; },
     };
+    $('#sub').textContent = `· ${N.toLocaleString()} records`;
     step(100, 'ready');
     setTimeout(() => $('#load').classList.add('gone'), 260);
     // Not awaited: the morph carries motion until the solver is up, then it takes over.
@@ -1015,15 +1016,28 @@ addEventListener('pointermove', (e) => {
   }
   ptr.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
   pointerMoved = true;
-  const tip = $('#tip');
-  if (tip.classList.contains('on')) {
-    tip.style.left = Math.min(e.clientX + 16, innerWidth - 310) + 'px';
-    tip.style.top = Math.min(e.clientY + 16, innerHeight - 90) + 'px';
-  }
+  ptrClient.x = e.clientX; ptrClient.y = e.clientY;
+  if ($('#tip').classList.contains('on')) placeTip();
 });
 /** The scene listens on window, so without this a press on the HUD or inside
  *  the detail panel raycasts straight through it and picks the tile behind. */
 const onScene = (e) => e.target && e.target.tagName === 'CANVAS';
+
+/**
+ * Put the tooltip beside the pointer.
+ *
+ * Called when it is shown as well as when the pointer moves, which it was not: the
+ * move handler only repositioned a tip that was *already* visible, so the first one
+ * of a session appeared at the top-left corner of the window — over the title — and
+ * only snapped to the pointer on the next movement. Invisible to the pixel baseline,
+ * because the tip is DOM and the baseline photographs the canvas.
+ */
+function placeTip() {
+  const tip = $('#tip');
+  tip.style.left = Math.min(ptrClient.x + 16, innerWidth - 310) + 'px';
+  tip.style.top = Math.min(ptrClient.y + 16, innerHeight - 90) + 'px';
+}
+const ptrClient = { x: -99, y: -99 };
 
 /**
  * The label under the pointer, or null.
@@ -1118,6 +1132,7 @@ function pick() {
   audio.hover(r, posCur[id * 3], posCur[id * 3 + 1], posCur[id * 3 + 2]);
   tip.innerHTML = `<b>${esc(r.n || r.t || 'Prompt')}</b>
     <i>${esc(r.m || 'no model')} · ${r.w} words · ${esc(r.k || '')}</i>`;
+  placeTip();
   tip.classList.add('on');
   document.body.style.cursor = 'pointer';
 }

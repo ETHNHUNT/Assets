@@ -390,6 +390,14 @@ It has to be served over HTTP. Opening `web/index.html` from disk fails twice ov
 | **Helix** | a spiral column you can fly down |
 | **By model** | the twelve largest models as labelled blocks, the tail rolled into one — small multiples, so block sizes compare directly |
 
+**The chrome is built on a token scale.** Eleven font sizes and seven corner radii had
+accumulated, which is what makes an interface look assembled rather than designed; there
+are now five of each and nothing uses a value that is not named. One accent carries every
+interactive state and the teal is spent only on *this is on* — a lit toggle, a copied
+prompt — so it still means something when it appears. Borders gave way to surface
+elevation, `:focus-visible` rings exist because the keyboard is now how the atlas is
+navigated, and the selects are styled rather than left to whatever the OS decided.
+
 **The corpus exists as text, not only as pixels.** `tools/build_static.py` writes
 `web/prompts/` — every prompt as ordinary paginated HTML, linked from the header and from
 a `<noscript>`, each record anchored by id and linking back into the atlas at itself. The
