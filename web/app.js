@@ -209,6 +209,22 @@ async function boot() {
       get detail() { return detail ? detail.stats : null; },
       forceDetail() { if (detail) { detail.due = 0; detail.update(camera, posCur, active); } },
       pickNow() { return pickInstance(); },
+
+      /**
+       * Aim at a normalised device coordinate and pick, the way a pointer would.
+       * Together with project() this makes picking checkable without a single pixel:
+       * a tile's centre, projected to NDC and then picked, has to come back as that
+       * tile. Pure maths on both sides, so the answer is the same on any machine —
+       * which a rendered frame is not.
+       */
+      pickAt(x, y) { ptr.set(x, y); return pickInstance(); },
+
+      /** Where tile i's centre lands in NDC, given the camera as it stands. */
+      project(i) {
+        const v = new THREE.Vector3(posCur[i * 3], posCur[i * 3 + 1], posCur[i * 3 + 2]);
+        v.project(camera);
+        return [v.x, v.y, v.z];
+      },
       get morph() { return morphCtl.value; },
       get detailCanvas() { return detail && detail.canvas; },
       get detailTex() { return detail && detail.texture; },
