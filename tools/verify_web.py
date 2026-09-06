@@ -255,6 +255,65 @@ def check_labels(page):
           f"matching every label's stated count")
 
 
+def check_url(browser, base, viewport):
+    """A view has to survive being sent to someone else.
+
+    Selection already lived in the hash; mode, filters and sort did not, so a link to
+    "grid, this model, sorted by length, this record" was a set of instructions rather
+    than a URL. This drives one page into a state, takes the URL it produced, and
+    opens it in a second page — which is the only honest way to test the round trip,
+    since reading back what you just wrote proves nothing about whether it can be read.
+
+    A fresh page, not a reload: the state has to come from the URL alone and not from
+    anything the first page left behind.
+    """
+    a = browser.new_page(viewport=viewport, reduced_motion="reduce")
+    a.goto(base, wait_until="load")
+    a.wait_for_function("() => window.__atlas && window.__atlas.counts.instances>0")
+    made = a.evaluate("""() => {
+      const A = window.__atlas;
+      A.setLayout('sphere', true);
+      A.setSort('length');
+      A.setFilter('portrait');
+      const order = A.order();
+      A.select(order[3]);
+      return { url: A.url, count: document.querySelector('#count').textContent,
+               selected: A.panel.selected, rid: A.panel.rid };
+    }""")
+    a.close()
+
+    if not made["url"]["query"]:
+        sys.exit("url: driving the view wrote nothing to the query string")
+
+    shared = base.split("?")[0] + "?" + made["url"]["query"] + "&" + \
+        base.split("?", 1)[1] + made["url"]["hash"]
+    b = browser.new_page(viewport=viewport, reduced_motion="reduce")
+    b.goto(shared, wait_until="load")
+    b.wait_for_function("() => window.__atlas && window.__atlas.counts.instances>0")
+    got = b.evaluate("""() => {
+      const A = window.__atlas;
+      return { count: document.querySelector('#count').textContent,
+               sort: document.querySelector('#f-sort').value,
+               q: document.querySelector('#q').value,
+               mode: [...document.querySelector('#modes').children]
+                 .find((c) => c.classList.contains('on'))?.dataset.mode,
+               selected: A.panel.selected, rid: A.panel.rid,
+               open: A.panel.open };
+    }""")
+    b.close()
+
+    if got["count"] != made["count"]:
+        sys.exit(f"url: the shared link shows {got['count']!r}, the view it came from "
+                 f"showed {made['count']!r} — the filter did not survive")
+    if got["mode"] != "sphere" or got["sort"] != "length" or got["q"] != "portrait":
+        sys.exit(f"url: mode/sort/query did not survive the round trip ({got})")
+    if not got["open"] or got["rid"] != made["rid"]:
+        sys.exit(f"url: the selected record did not survive — opened {got['rid']!r}, "
+                 f"expected {made['rid']!r}")
+    print(f"  url: {made['count']} + sphere + sort + selection survive a fresh page "
+          f"({len(made['url']['query'])} chars of query)")
+
+
 def check_audio(page, bursts=500):
     """The audio graph, and the voice cap that keeps a collapsing pile from killing it.
 
@@ -842,6 +901,7 @@ def capture(backend, scenes, timeout_s=90):
         check_audio(page)
         check_sort(page)
         check_labels(page)
+        check_url(browser, url, {"width": 1280, "height": 800})
         browser.close()
     httpd.shutdown()
     if errors:
