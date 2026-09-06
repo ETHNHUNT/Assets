@@ -46,13 +46,24 @@ export function computeLayout(mode, { total, list, records, viewAspect, posCur, 
     // radius from surface density: n tiles of ~1.55 pitch tile the sphere,
     // so it reads as a solid shell rather than scattered confetti
     const R = Math.max(9, Math.sqrt(n * 1.55 * 1.55 / (4 * Math.PI)));
+    const mat = new THREE.Matrix4();
+    const vUp = new THREE.Vector3();
+    const vRight = new THREE.Vector3();
     list.forEach((idx, k) => {
       const y = 1 - (k / Math.max(1, n - 1)) * 2;
       const rad = Math.sqrt(Math.max(0, 1 - y * y));
       const th = Math.PI * (3 - Math.sqrt(5)) * k;
       const v = new THREE.Vector3(Math.cos(th) * rad, y, Math.sin(th) * rad).multiplyScalar(R);
-      const q = new THREE.Quaternion().setFromUnitVectors(
-        new THREE.Vector3(0, 0, 1), v.clone().normalize());
+      const norm = v.clone().normalize();
+      if (Math.abs(norm.y) < 0.9999) {
+        vUp.set(0, 1, 0).sub(norm.clone().multiplyScalar(norm.y)).normalize();
+        vRight.crossVectors(vUp, norm).normalize();
+      } else {
+        vUp.set(0, 0, norm.y > 0 ? -1 : 1);
+        vRight.set(1, 0, 0);
+      }
+      mat.makeBasis(vRight, vUp, norm);
+      const q = new THREE.Quaternion().setFromRotationMatrix(mat);
       out[idx] = [v.x, v.y, v.z, q];
     });
   } else if (mode === 'helix') {

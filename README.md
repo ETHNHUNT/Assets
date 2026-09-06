@@ -658,12 +658,22 @@ tolerance, and they hold anywhere the code runs:
 | picking | project a tile's centre, aim there, and it must pick that tile — plus just inside its edge, and *not* from the gap past it |
 | framing | frame each arrangement, let the flight land, and every visible tile must project inside NDC |
 | detail panel | 12 selections must leave **one** history entry, and each must show the record it was asked for |
+| audio | the graph builds, costs nothing while off, and 500 impacts in one window make at most 5 voices |
 
 Each earned itself. Picking's edge probe caught a broad-phase radius tightened from 0.92
 to 0.30 that a centre-only test passed happily. Framing caught the camera never moving at
 all under `prefers-reduced-motion`. The panel's history rule is the one in the code
 comment — forty records must not cost forty presses of Back — and nothing else was
-holding it.
+holding it. The audio cap is what keeps a collapsing pile from fanning thousands of live
+nodes off the master in a single frame; removing it builds 500 sources where 5 are
+allowed.
+
+Every one of them asserts a lower bound as well as an upper one, and that is deliberate.
+A cap that passes because nothing was created, a scene that matches because its subsystem
+never ran — that is the failure this harness has hit three separate times (physics
+disabled by a flag, the LOD cache never electing past ~8 units, the filter stagger
+flattened by `prefers-reduced-motion`). A check that measures nothing is worse than no
+check, because it reports green while a bug walks past.
 
 ### The camera has to be nailed down, and once was not
 

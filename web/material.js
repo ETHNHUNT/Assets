@@ -1,7 +1,7 @@
 import * as THREE from 'three/webgpu';
 import {
   attribute, uv, vec2, vec3, vec4, float, texture, mix, smoothstep,
-  step as tslStep, positionLocal, normalize, mrt,
+  step as tslStep, positionLocal, normalize, mrt, frontFacing,
 } from 'three/tsl';
 
 /**
@@ -40,8 +40,11 @@ export function tileMaterial({ atlas, perRow, detail, uMorph }) {
   // along its diagonal. Snapping to the nearest integer first makes it exact.
   const snap = (v) => v.add(float(0.5)).floor();
 
-  // flipY is off on both textures, so row 0 is the top of the image
-  const cellLocal = vec2(uv().x, uv().y.oneMinus());
+  // flipY is off on both textures, so row 0 is the top of the image.
+  // Backfaces (viewed from inside the sphere) flip U so thumbnails remain readable rather than mirrored.
+  const u = frontFacing.select(uv().x, uv().x.oneMinus());
+  const cellLocal = vec2(u, uv().y.oneMinus());
+
 
   const per = float(perRow);
   const cell = snap(meta.x);

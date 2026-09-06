@@ -154,6 +154,80 @@ def serve(port):
     return httpd
 
 
+def check_audio(page, bursts=500):
+    """The audio graph, and the voice cap that keeps a collapsing pile from killing it.
+
+    A 2,936-body pile generates thousands of contact events per frame. Every impact
+    that gets through builds a buffer source, a filter and a gain and hangs them off
+    the master, so without a ceiling one frame of a collapse fans out into thousands
+    of live nodes. The cap is five per 16 ms window and it is the whole reason sound
+    survives physics mode.
+
+    Nothing needs an audio device for this. Under ?audio=0 — which every run here uses
+    — toggle() still constructs the context and builds the graph, then returns false
+    and leaves `on` false, so the silent path is exactly what the harness is already
+    running. The cap is exercised by forcing `on` and counting nodes; a suspended
+    context creates them quite happily, it simply never plays them.
+
+    The lower bound on that count matters as much as the upper one. A cap check that
+    passes because nothing was created at all is the failure mode this whole harness
+    keeps running into, so the assertion is 1 <= created <= 5, never just <= 5.
+    """
+    res = page.evaluate("""([bursts]) => {
+      const a = window.__atlas.audio;
+      const out = {};
+
+      return (async () => {
+        const enabled = await a.toggle();          // ?audio=0: builds, stays silent
+        out.toggleReturned = enabled;
+        out.on = a.on;
+        out.built = !!(a.ctx && a.master && a.bed);
+        if (!out.built) return out;
+
+        // count what actually reaches the graph
+        const ctx = a.ctx;
+        let sources = 0, oscs = 0;
+        const realSrc = ctx.createBufferSource.bind(ctx);
+        const realOsc = ctx.createOscillator.bind(ctx);
+        ctx.createBufferSource = () => { sources++; return realSrc(); };
+        ctx.createOscillator = () => { oscs++; return realOsc(); };
+
+        // silent while off
+        for (let k = 0; k < 50; k++) { a.impact(0.5); a.select(); a.morph(); }
+        out.whileOff = sources + oscs;
+
+        // the cap, with one window forced open
+        a.on = true;
+        sources = 0; oscs = 0;
+        a.impactWindow = 0; a.impacts = 0;
+        for (let k = 0; k < bursts; k++) a.impact(0.6);
+        out.capped = sources;
+        a.on = false;
+
+        ctx.createBufferSource = realSrc;
+        ctx.createOscillator = realOsc;
+        return out;
+      })();
+    }""", [bursts])
+
+    if not res.get("built"):
+        sys.exit("audio: the graph did not build — ctx, master or bed missing")
+    if res["toggleReturned"] or res["on"]:
+        sys.exit(f"audio: ?audio=0 did not keep it silent "
+                 f"(toggle returned {res['toggleReturned']}, on={res['on']})")
+    if res["whileOff"]:
+        sys.exit(f"audio: {res['whileOff']} node(s) built while sound was off — the "
+                 f"silent path is meant to cost nothing")
+    if res["capped"] > 5:
+        sys.exit(f"audio: {bursts} impacts in one window built {res['capped']} sources. "
+                 f"The cap is 5; a collapsing pile fans out without it.")
+    if res["capped"] < 1:
+        sys.exit(f"audio: {bursts} impacts built nothing at all, so the cap proved "
+                 f"nothing. Sound was off, or impact() no longer reaches the graph.")
+    print(f"  audio: graph builds, silent under ?audio=0, "
+          f"{bursts} impacts capped to {res['capped']} voices")
+
+
 def check_detail_panel(page, runs=12):
     """The detail panel, including the history rule that is invisible from the code.
 
@@ -592,6 +666,7 @@ def capture(backend, scenes, timeout_s=90):
         # the check had moved the weather.
         check_framing(page)
         check_detail_panel(page)
+        check_audio(page)
         browser.close()
     httpd.shutdown()
     if errors:

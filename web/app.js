@@ -20,7 +20,7 @@ import { PhysicsWorld } from './physics.js';
 import { MorphController } from './morph.js';
 import { computeLayout, FLAT } from './layouts.js';
 import { Picker } from './picking.js';
-import { CameraFlight, fitDistance } from './camera.js';
+import { CameraFlight, fitDistance, fitSphereDistance } from './camera.js';
 import { tileMaterial } from './material.js';
 import { DetailCache } from './detail.js';
 import { Highlight } from './highlight.js';
@@ -345,6 +345,7 @@ async function boot() {
         flight.cancel();
         clearTimeout(physFrameTimer);
         controls.enableDamping = false;
+        controls.autoRotate = false;
         camera.position.set(x, y, z);
         controls.target.set(0, 0, 0);
         controls.update();                 // applies and zeroes the pending deltas
@@ -932,7 +933,10 @@ function frameCamera(preferDir) {
   for (const L of groupLabels) box.expandByPoint(v.copy(L.pos).addScalar(1.6));
   if (!any) return;
   const centre = box.getCenter(new THREE.Vector3());
-  const dist = fitDistance(box.getSize(new THREE.Vector3()), camera.fov, camera.aspect);
+  const size = box.getSize(new THREE.Vector3());
+  const dist = mode === 'sphere'
+    ? fitSphereDistance(size.x * 0.5, camera.fov, camera.aspect)
+    : fitDistance(size, camera.fov, camera.aspect);
   const dir0 = preferDir ? preferDir.clone().normalize()
                          : camera.position.clone().sub(controls.target).normalize();
   if (!isFinite(dir0.x) || dir0.lengthSq() < 1e-6) dir0.set(0, 0.18, 1).normalize();
@@ -943,6 +947,11 @@ function frameCamera(preferDir) {
   if ($('#detail').classList.contains('open') && innerWidth > 820) {
     const right = new THREE.Vector3().crossVectors(dir, camera.up).normalize();
     const shift = right.multiplyScalar(dist * 0.16);
+    toP.add(shift); toT.add(shift);
+  } else if (mode === 'sphere' && innerWidth > 820) {
+    // on desktop, balance the left sidebar so the sphere is visually centered in the open canvas
+    const right = new THREE.Vector3().crossVectors(dir, camera.up).normalize();
+    const shift = right.multiplyScalar(dist * 0.04);
     toP.add(shift); toT.add(shift);
   }
   flight.to(controls.target.clone(), toT, camera.position.clone(), toP);
@@ -1063,6 +1072,18 @@ function buildUI() {
   addEventListener('keydown', (e) => {
     if (e.key === 'Escape') { closeDetail(); $('#q').blur(); }
     if (e.key === '/' && document.activeElement !== $('#q')) { e.preventDefault(); $('#q').focus(); }
+    if ((e.key === 'i' || e.key === 'I') && document.activeElement !== $('#q')) {
+      if (mode === 'sphere') {
+        const inside = camera.position.distanceTo(controls.target) < 14;
+        if (inside) {
+          frameCamera();
+        } else {
+          const dir = camera.position.clone().sub(controls.target).normalize();
+          flight.to(controls.target.clone(), controls.target.clone().sub(dir.clone().multiplyScalar(22)),
+                    camera.position.clone(), controls.target.clone().add(dir.clone().multiplyScalar(3.2)));
+        }
+      }
+    }
   });
   // Mobile browsers fire resize every time the URL bar slides in or out, so
   // debounce it: reallocating the swapchain mid-scroll is the one thing here
@@ -1185,6 +1206,11 @@ function tick() {
     audio.motion(d / Math.max(dt, 1e-3) / 40);
   }
   if (dust) dust.rotation.y += dt * 0.006;
+  const allowAutoRotate = controls.enableDamping && mode === 'sphere' && hovered < 0 && selected < 0 && !flight.active;
+  if (controls.autoRotate !== allowAutoRotate) {
+    controls.autoRotate = allowAutoRotate;
+    controls.autoRotateSpeed = 0.35;
+  }
   controls.update();
   if (pipeline) pipeline.render(); else renderer.render(scene, camera);
 

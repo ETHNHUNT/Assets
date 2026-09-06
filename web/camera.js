@@ -33,6 +33,19 @@ export function fitDistance(size, fov, aspect, margin = 1.06) {
     (size.x * 0.5) / tanH + depth) * margin;
 }
 
+/**
+ * How far from a sphere's centre the camera must sit to frame it cleanly without clipping.
+ * Uses the perspective tangent cone rather than cuboid depth padding.
+ */
+export function fitSphereDistance(radius, fov, aspect, margin = 1.08) {
+  const halfFovV = (fov * Math.PI / 180) / 2;
+  const tanH = Math.tan(halfFovV) * aspect;
+  const halfFovH = Math.atan(tanH);
+  const minHalfFov = Math.min(halfFovV, halfFovH);
+  return Math.max(6, (radius / Math.sin(minHalfFov)) * margin);
+}
+
+
 export class CameraFlight {
   /**
    * @param camera
