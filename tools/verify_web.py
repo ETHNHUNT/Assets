@@ -255,6 +255,68 @@ def check_labels(page):
           f"matching every label's stated count")
 
 
+def check_keyboard(page):
+    """Every record has to be reachable without a pointer.
+
+    Before this the arrows only worked once a record was open, and opening one needed
+    a click — so the entire 2,936-record corpus was unreachable by keyboard. That is
+    not a missing convenience; it is the whole dataset, gone.
+
+    The cursor is held as a record index rather than a position so it survives a
+    filter, which is the property worth checking: walk the set, apply a filter that
+    excludes where you were standing, and the cursor has to let go rather than point
+    at something no longer on screen.
+    """
+    res = page.evaluate("""() => {
+      const A = window.__atlas;
+      A.clearHighlight();
+      A.setLayout('grid', true);
+      const order = A.order();
+      const out = {};
+
+      const cv = A.renderer.domElement;
+      out.canvas = { tabIndex: cv.tabIndex, role: cv.getAttribute('role'),
+                     label: !!cv.getAttribute('aria-label') };
+
+      A.cursor(1);                                  // first move lands on the start
+      out.first = A.cursorAt;
+      A.cursor(1); A.cursor(1);
+      out.third = A.cursorAt;
+      out.expectedThird = order[2];
+      out.announced = A.announced;
+
+      // clamped, not wrapped: 400 moves back from the third tile is the first one
+      for (let k = 0; k < 400; k++) A.cursor(-1);
+      out.clampedLow = A.cursorAt === order[0];
+
+      // a filter that excludes the cursor must release it
+      A.cursor(1);
+      A.setFilter('portrait');
+      out.afterFilter = A.cursorAt;
+      out.filterAnnounced = A.announced;
+      A.clearHighlight();
+      return out;
+    }""")
+
+    c = res["canvas"]
+    if c["tabIndex"] < 0 or c["role"] != "application" or not c["label"]:
+        sys.exit(f"keyboard: the canvas is not reachable or not named ({c}) — nothing "
+                 f"can focus it, so the arrows have nowhere to land")
+    if res["third"] != res["expectedThird"]:
+        sys.exit(f"keyboard: three moves landed on {res['third']}, not the third tile "
+                 f"in laid-out order ({res['expectedThird']})")
+    if not res["clampedLow"]:
+        sys.exit("keyboard: moving back past the start did not clamp to the first tile")
+    if res["afterFilter"] >= 0:
+        sys.exit(f"keyboard: the cursor still points at {res['afterFilter']} after a "
+                 f"filter that excludes it — it is pointing off screen")
+    if "of 2,936" not in res["filterAnnounced"]:
+        sys.exit(f"keyboard: a filter announced {res['filterAnnounced']!r}, which does "
+                 f"not say how much is now shown")
+    print(f"  keyboard: canvas focusable and named, cursor walks the laid-out order, "
+          f"clamps, and releases on a filter ({res['announced'].split('.')[0]})")
+
+
 def check_compare(page):
     """Comparing several prompts at once, which is what a prompt library is for.
 
@@ -954,6 +1016,7 @@ def capture(backend, scenes, timeout_s=90):
         check_sort(page)
         check_labels(page)
         check_compare(page)
+        check_keyboard(page)
         check_url(browser, url, {"width": 1280, "height": 800})
         browser.close()
     httpd.shutdown()
