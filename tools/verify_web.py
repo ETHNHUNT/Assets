@@ -207,6 +207,54 @@ def check_sort(page):
           f"{res['moved']} moved (from {res['first']} to {res['last']} words)")
 
 
+def check_labels(page):
+    """Cluster labels have to be controls, not captions.
+
+    "By model" reads as analysis — headings with record counts — but a heading that
+    tells you a model holds 1,338 records and cannot show you them is describing the
+    work rather than doing it.
+
+    So: every label must name a model that exists, isolating one must leave exactly
+    the count the label claimed, and the rolled-up tail must not pretend to be a
+    model — "12 smaller models" is a bucket, and filtering to a model of that name
+    would match nothing at all.
+    """
+    res = page.evaluate("""() => {
+      const A = window.__atlas;
+      A.clearHighlight();
+      A.setLayout('clusters', true);
+      const labels = A.labels();
+      const clickable = labels.filter((l) => l.key);
+      const out = { total: labels.length, clickable: clickable.length, checked: [] };
+      for (const l of clickable) {
+        const shown = A.isolate(l.key);
+        const n = parseInt(shown.replace(/,/g, ''), 10);
+        out.checked.push({ key: l.key, n, claimed: l.count });
+      }
+      A.clearHighlight();
+      return out;
+    }""")
+    if not res["clickable"]:
+        sys.exit("labels: no cluster label carries a model to isolate")
+    if res["clickable"] >= res["total"]:
+        sys.exit(f"labels: all {res['total']} labels are clickable, so the rolled-up "
+                 f"tail is claiming to be a model it is not")
+    empty = [c for c in res["checked"] if c["n"] < 1]
+    if empty:
+        sys.exit(f"labels: isolating a label matched nothing, e.g. {empty[:3]} — the "
+                 f"key does not correspond to a value the model filter accepts")
+    # The count on the label is a promise about what clicking it gives you.
+    lying = [c for c in res["checked"] if c["n"] != c["claimed"]]
+    if lying:
+        sys.exit(f"labels: a label's count is not what isolating it returns, e.g. "
+                 f"{lying[:3]} (as key/got/claimed). The heading is describing a set "
+                 f"the filter does not produce.")
+    print(f"  labels: {res['clickable']} of {res['total']} isolate a model "
+          f"(tail correctly inert), e.g. "
+          f"{res['checked'][0]['key']} -> {res['checked'][0]['n']} records, "
+          f"matching every label's stated count")
+
+
 def check_audio(page, bursts=500):
     """The audio graph, and the voice cap that keeps a collapsing pile from killing it.
 
@@ -761,6 +809,7 @@ def capture(backend, scenes, timeout_s=90):
         check_detail_panel(page)
         check_audio(page)
         check_sort(page)
+        check_labels(page)
         browser.close()
     httpd.shutdown()
     if errors:

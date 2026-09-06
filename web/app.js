@@ -18,7 +18,7 @@ import { animate, createSpring } from 'animejs';
 import { AtlasAudio } from './audio.js';
 import { PhysicsWorld } from './physics.js';
 import { MorphController } from './morph.js';
-import { computeLayout, FLAT } from './layouts.js';
+import { computeLayout, FLAT, NO_MODEL_LABEL } from './layouts.js';
 import { Picker } from './picking.js';
 import { CameraFlight, fitDistance, fitSphereDistance } from './camera.js';
 import { tileMaterial } from './material.js';
@@ -384,6 +384,14 @@ async function boot() {
       setSort(k) { sortBy = k; $('#f-sort').value = k; layout(null, true); },
       /** The order tiles were laid out in, which is the thing a sort has to change. */
       order() { return activeList(); },
+      /** The cluster labels and what each one isolates, for a test to drive. */
+      labels() {
+        return (labelGroup ? labelGroup.children : []).map((m) => ({
+          text: m.userData.key, key: m.userData.key, count: m.userData.count,
+          pos: [m.position.x, m.position.y, m.position.z],
+        }));
+      },
+      isolate(key) { isolateModel(key); return $('#count').textContent; },
       wordCounts(ids) { return ids.map((i) => DATA.records[i].w || 0); },
       hover(i) { hovered = i; highlight.invalidate(); },
       clearHighlight() { hovered = -1; selected = -1; sortBy = '';
@@ -670,11 +678,24 @@ function buildLabels() {
     }
     m.position.copy(L.pos);
     m.quaternion.copy(L.q);
+    // What clicking it means. Null for the rolled-up tail, which names no model.
+    m.userData.key = L.key || null;
+    m.userData.count = L.count;
     labelGroup.add(m);
   }
   labelGroup.renderOrder = 2;
   scene.add(labelGroup);
 }
+
+/**
+ * The model filter's stand-in for "attributed to no model at all".
+ *
+ * 514 records carry no model, which is a set worth being able to ask for — the
+ * clusters view already gives it a labelled block. An empty string cannot say it,
+ * because that is what the filter uses for "any model", so it needs a value of its
+ * own that no real model will ever collide with.
+ */
+const NO_MODEL = '\u0000none';
 
 const MODES = {
   grid: 'Grid', sphere: 'Sphere', helix: 'Helix',
@@ -898,6 +919,39 @@ addEventListener('pointermove', (e) => {
  *  the detail panel raycasts straight through it and picks the tile behind. */
 const onScene = (e) => e.target && e.target.tagName === 'CANVAS';
 
+/**
+ * The label under the pointer, or null.
+ *
+ * A separate raycast from the tile pick, and cheap enough not to care: there are at
+ * most thirteen labels against 2,936 tiles, and they are ordinary meshes rather than
+ * instances, so three's own intersectObjects is the right tool here where it is
+ * exactly the wrong one for the atlas.
+ */
+function pickLabel() {
+  if (!labelGroup) return null;
+  const r = picker.rayAt(ptr, camera);
+  const hit = r.intersectObjects(labelGroup.children, false)[0];
+  return hit && hit.object.userData.key ? hit.object.userData.key : null;
+}
+
+/**
+ * Clicking a cluster label isolates that model.
+ *
+ * The labels read as analysis — "By model", with counts — but until now they were
+ * captions on a poster. A heading that tells you a model holds 1,338 records and
+ * cannot show you them is describing the work rather than doing it.
+ */
+function isolateModel(key) {
+  $('#q').value = '';
+  // The block for unattributed records is labelled in words; the filter needs the
+  // sentinel. Without the swap the select silently falls back to "All models" and
+  // clicking a label that promises 514 records hands you all 2,936.
+  $('#f-model').value = key === NO_MODEL_LABEL ? NO_MODEL : key;
+  $('#f-tool').value = ''; $('#f-style').value = ''; $('#f-kind').value = '';
+  applyFilters();
+  frameCamera();
+}
+
 addEventListener('pointerdown', (e) => {
   if (!onScene(e)) { downAt = null; return; }
   downAt = { x: e.clientX, y: e.clientY, touch: e.pointerType === 'touch' };
@@ -914,6 +968,10 @@ addEventListener('pointerup', (e) => {
   // wherever the pointer was last seen — on a phone that is a different record
   // entirely, and it opens silently with no sign anything went wrong.
   ptr.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  // Labels first: one sits in front of the block it names, so testing tiles first
+  // would hand every label click to whatever tile happens to be behind it.
+  const label = pickLabel();
+  if (label) { isolateModel(label); return; }
   const id = morphCtl.value < 1 ? -1 : picker.pick(ptr, camera, { n: N, posCur, quatCur, active, halfSize: (i) => highlight.halfSize(i) });
   if (id >= 0) {
     hovered = id; highlight.invalidate();
@@ -941,7 +999,12 @@ function pick() {
   hovered = id;
   highlight.invalidate();
   const tip = $('#tip');
-  if (id < 0) { tip.classList.remove('on'); document.body.style.cursor = ''; return; }
+  if (id < 0) {
+    tip.classList.remove('on');
+    // a label is still something to click, so keep the cursor honest over one
+    document.body.style.cursor = pickLabel() ? 'pointer' : '';
+    return;
+  }
   const r = DATA.records[id];
   audio.hover(r, posCur[id * 3], posCur[id * 3 + 1], posCur[id * 3 + 2]);
   tip.innerHTML = `<b>${esc(r.n || r.t || 'Prompt')}</b>
@@ -1101,13 +1164,13 @@ function buildUI() {
 
   const uniq = (fn) => [...new Set(DATA.records.flatMap(fn).filter(Boolean))].sort();
   fill('#f-tool', uniq((r) => [r.t]));
-  fill('#f-model', uniq((r) => [r.m]));
+  fill('#f-model', uniq((r) => [r.m]), [[NO_MODEL, 'No model attributed']]);
   fill('#f-style', uniq((r) => r.s));
-  function fill(sel, vals) {
+  function fill(sel, vals, extra = []) {
     const el = $(sel);
-    for (const v of vals) {
+    for (const [v, label] of [...extra, ...vals.map((v) => [v, v])]) {
       const o = document.createElement('option');
-      o.value = v; o.textContent = v; el.appendChild(o);
+      o.value = v; o.textContent = label; el.appendChild(o);
     }
     el.onchange = applyFilters;
   }
@@ -1171,7 +1234,8 @@ function applyFilters() {
   let n = 0;
   for (let i = 0; i < N; i++) {
     const r = DATA.records[i];
-    const ok = (!tool || r.t === tool) && (!model || r.m === model) &&
+    const modelOk = !model || (model === NO_MODEL ? !r.m : r.m === model);
+    const ok = (!tool || r.t === tool) && modelOk &&
                (!style || r.s.includes(style)) && (!kind || r.k === kind) &&
                (!q || r.p.toLowerCase().includes(q) || r.n.toLowerCase().includes(q) ||
                      r.m.toLowerCase().includes(q));
