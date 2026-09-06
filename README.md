@@ -390,6 +390,20 @@ It has to be served over HTTP. Opening `web/index.html` from disk fails twice ov
 | **Helix** | a spiral column you can fly down |
 | **By model** | the twelve largest models as labelled blocks, the tail rolled into one — small multiples, so block sizes compare directly |
 
+A fifth control sits under the filters: **order**. The atlas was always sorted — the build
+orders records by tool type then model — but fixedly and invisibly, which on 2,936 tiles
+reads the same as unordered, because you cannot scan a wall whose sequence you cannot
+predict. Tiles can now be laid out by prompt length, model or tool type instead.
+
+Name is deliberately not offered: `n` is populated on **764 of 2,936** records, so sorting
+by it would leave three quarters of the atlas in an arbitrary tail. There is no date field
+either, so there is nothing to sort chronologically by.
+
+Length puts the 538 presets that publish no prompt at the short end, which is the honest
+reading of a missing word count rather than a value to shuffle away — they genuinely have
+no words. Every comparator falls back to atlas order on a tie, so the ordering is total and
+the same filter lays out identically between runs.
+
 Two toggles sit in the header. **Bloom** is selective post-processing; **sound** is off until you
 ask for it. Both are described below.
 
@@ -650,6 +664,7 @@ tolerance, and they hold anywhere the code runs:
 | picking | project a tile's centre, aim there, and it must pick that tile — plus just inside its edge, and *not* from the gap past it |
 | framing | frame each arrangement, let the flight land, and every visible tile must project inside NDC |
 | detail panel | 12 selections must leave **one** history entry, and each must show the record it was asked for |
+| sort | ordering by length is monotonic across the laid-out sequence, and actually moves tiles |
 | audio | the graph builds, costs nothing while off, 500 impacts in one window make at most 5 voices, each positioned one gets exactly one panner, and the listener follows where it is put |
 
 Each earned itself. Picking's edge probe caught a broad-phase radius tightened from 0.92
