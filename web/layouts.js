@@ -32,14 +32,25 @@ export const NO_MODEL_LABEL = 'no model attributed';
  * @param posCur    current positions — physics alone starts from where tiles are
  * @returns { out, labels }
  */
-export function computeLayout(mode, { total, list, records, viewAspect, posCur }) {
+/**
+ * How far apart tiles sit, as a multiple of a tile's width.
+ *
+ * A tile is one unit across, so 1.0 is edge to edge and anything above it is gutter.
+ * The default was 1.5 — half a tile of air between every pair — which reads as a
+ * diagram rather than a wall of images. `poster` is the reference's spacing: enough
+ * of a seam to tell two tiles apart and no more.
+ */
+export const DENSITY = { comfortable: 1.7, default: 1.5, poster: 1.12 };
+
+export function computeLayout(mode, { total, list, records, viewAspect, posCur,
+                                      pitch = DENSITY.default, expandTail = false }) {
   const n = list.length || 1;
   const out = [];
   const labels = [];
 
   if (mode === 'grid') {
     const cols = Math.max(1, Math.round(Math.sqrt(n * viewAspect(1.9))));
-    const gx = 1.5, gy = 1.5;
+    const gx = pitch, gy = pitch;
     list.forEach((idx, k) => {
       const c = k % cols, r = Math.floor(k / cols);
       out[idx] = [(c - cols / 2) * gx, -(r - Math.ceil(n / cols) / 2) * gy, 0, FLAT];
@@ -47,7 +58,8 @@ export function computeLayout(mode, { total, list, records, viewAspect, posCur }
   } else if (mode === 'sphere') {
     // radius from surface density: n tiles of ~1.55 pitch tile the sphere,
     // so it reads as a solid shell rather than scattered confetti
-    const R = Math.max(9, Math.sqrt(n * 1.55 * 1.55 / (4 * Math.PI)));
+    const shell = pitch * 1.033;                 // 1.55 at the default pitch
+    const R = Math.max(9, Math.sqrt(n * shell * shell / (4 * Math.PI)));
     const mat = new THREE.Matrix4();
     const vUp = new THREE.Vector3();
     const vRight = new THREE.Vector3();
@@ -70,9 +82,10 @@ export function computeLayout(mode, { total, list, records, viewAspect, posCur }
     });
   } else if (mode === 'helix') {
     const R = Math.max(12, n / 145);
-    const perTurn = Math.max(18, Math.round(2 * Math.PI * R / 1.5));
+    const perTurn = Math.max(18, Math.round(2 * Math.PI * R / pitch));
     list.forEach((idx, k) => {
-      const a = (k / perTurn) * Math.PI * 2, y = k * (1.5 / perTurn) * 1.9 - n * (1.5 / perTurn) * 0.95;
+      const a = (k / perTurn) * Math.PI * 2;
+      const y = k * (pitch / perTurn) * 1.9 - n * (pitch / perTurn) * 0.95;
       const v = new THREE.Vector3(Math.sin(a) * R, y, Math.cos(a) * R);
       const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, a, 0));
       out[idx] = [v.x, v.y, v.z, q];
@@ -88,7 +101,7 @@ export function computeLayout(mode, { total, list, records, viewAspect, posCur }
     // groups legible and roll the long tail into one bucket.
     let keys = [...groups.keys()].sort((a, b) => groups.get(b).length - groups.get(a).length);
     let tailLabel = null;
-    const CAP = 12;
+    const CAP = expandTail ? 40 : 12;
     if (keys.length > CAP) {
       const tail = keys.slice(CAP);
       const rest = tail.flatMap((k) => groups.get(k));
