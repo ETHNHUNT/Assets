@@ -317,6 +317,73 @@ def check_keyboard(page):
           f"clamps, and releases on a filter ({res['announced'].split('.')[0]})")
 
 
+def check_preview(page):
+    """A hovered video previews; a hovered image does not.
+
+    Checked at the decision, not at the picture. The files live on a CDN this harness
+    has no business depending on — and cannot use anyway, since it answers a
+    cross-origin request with 403, which is the reason the preview is a positioned
+    element rather than a texture in the first place. So: does hovering a video arm a
+    preview and point it at that record's file, does hovering a still leave it alone,
+    and does the sound follow the toggle rather than starting on its own.
+
+    The delay is part of the behaviour, not an implementation detail. Without it,
+    sweeping a pointer across a wall would start a 3.5 MB fetch per tile it crossed.
+    """
+    res = page.evaluate("""async () => {
+      const A = window.__atlas;
+      A.clearHighlight();
+      A.setLayout('grid', true);
+      const recs = A.order();
+      // pick one of each from the visible set
+      let vid = -1, img = -1;
+      for (const i of recs) {
+        const k = A.recordKind(i);
+        if (k === 'video' && vid < 0) vid = i;
+        if (k === 'image' && img < 0) img = i;
+        if (vid >= 0 && img >= 0) break;
+      }
+
+      const armed = A.preview(vid);
+      const immediate = A.previewState.forRecord;      // still waiting out the delay
+      await new Promise(r => setTimeout(r, 700));
+      const afterDelay = A.previewState;
+
+      A.preview(img);
+      await new Promise(r => setTimeout(r, 700));
+      const still = A.previewState;
+
+      A.preview(-1);
+      const cleared = A.previewState;
+      const kinds = {};
+      for (const i of recs) { const k = A.recordKind(i); kinds[k] = (kinds[k] || 0) + 1; }
+      return { vid, img, immediate, afterDelay, still, cleared,
+               scanned: recs.length, kinds, soundOn: A.audio.on };
+    }""")
+
+    if res["vid"] < 0 or res["img"] < 0:
+        sys.exit(f"preview: could not find both a video and a still among the "
+                 f"{res.get('scanned')} records on screen "
+                 f"(kinds seen: {res.get('kinds')}) — video={res['vid']}, still={res['img']}")
+    if res["immediate"] != -1:
+        sys.exit(f"preview: armed immediately on hover ({res['immediate']}) — the delay "
+                 f"is what stops a pointer sweep fetching a file per tile")
+    if res["afterDelay"]["forRecord"] != res["vid"]:
+        sys.exit(f"preview: hovering a video did not arm one ({res['afterDelay']})")
+    if not (res["afterDelay"]["src"] or "").endswith((".mp4", ".mov")):
+        sys.exit(f"preview: armed without pointing at the record's file "
+                 f"({res['afterDelay']['src']!r})")
+    if res["soundOn"] is False and not res["afterDelay"]["muted"]:
+        sys.exit("preview: started unmuted while sound is off — audio belongs to the "
+                 "toggle, not to a hover")
+    if res["still"]["forRecord"] == res["img"]:
+        sys.exit(f"preview: a still image armed a video preview ({res['still']})")
+    if res["cleared"]["forRecord"] != -1 or res["cleared"]["src"]:
+        sys.exit(f"preview: leaving the tile did not release it ({res['cleared']})")
+    print(f"  preview: video {res['vid']} arms after the delay and stays muted, "
+          f"still {res['img']} does not, releasing clears the source")
+
+
 def check_compare(page):
     """Comparing several prompts at once, which is what a prompt library is for.
 
@@ -920,6 +987,13 @@ def capture(backend, scenes, timeout_s=90):
         page.goto(url, wait_until="load", timeout=timeout_s * 1000)
         page.wait_for_function("() => window.__atlas && window.__atlas.counts.instances > 0",
                                timeout=timeout_s * 1000)
+        # Physics starts at boot without being awaited, so it completes whenever the
+        # wasm finishes loading — and completing means teleporting every body and
+        # re-pointing the springs. Landing in the middle of a capture, that shows up
+        # as a scene that changed by a few units for no reason anyone can name. Wait
+        # for it once, here, and nothing moves underneath the scenes.
+        page.evaluate("async () => { await window.__atlas.whenPhysicsReady(); }")
+
         info = page.evaluate("() => ({...window.__atlas.counts, ...window.__atlas.flags})")
 
         # What was asked for is not always what runs: a headless Chrome, a blocklisted
@@ -1016,6 +1090,7 @@ def capture(backend, scenes, timeout_s=90):
         check_sort(page)
         check_labels(page)
         check_compare(page)
+        check_preview(page)
         check_keyboard(page)
         check_url(browser, url, {"width": 1280, "height": 800})
         browser.close()
