@@ -670,6 +670,32 @@ python3 tools/verify_web.py --tag mbp              # check against it
 Re-capture after a browser or driver change — and never widen the tolerance to silence a
 diff you have not explained.
 
+**This check is local-only, and that is a finding rather than an omission.** It was wired
+into CI, and CI proved it cannot live there. Two runs of the same commit against the same
+committed baseline gave `grid-front` a maxΔ of 12 and then 0 — binary, not drift, which is
+what two different software rasterizer code paths look like. GitHub's runners are a pool of
+differing CPUs, and SwiftShader picks its SIMD path from the CPU it finds.
+
+So the sentence above — a baseline belongs to one machine — quietly rules CI out, because a
+runner pool is not a machine. Capturing on one runner and checking on another compares two
+machines, which is the exact thing the per-machine filenames exist to prevent.
+
+`grid-front` is the scene that exposes it because it is the degenerate view: dead-on and
+axis-aligned at coplanar tiles, so tile edges land on pixel boundaries and a tie-break flips
+whole rows at once. Measured locally, it is about three times as camera-sensitive as
+`grid-angled` — meanΔ 0.69 against 0.21 for the same nudge. On a stable machine that
+sensitivity costs nothing and every scene reproduces at 0.
+
+Run it before pushing anything that touches `web/`:
+
+```bash
+python3 tools/verify_web.py --tag <your-machine>
+```
+
+The refactors in `web/morph.js`, `web/physics.js` and `web/layouts.js` were each verified
+this way, against a baseline captured before the change. That is the workflow — capture
+first, refactor, check — and it is worth more than a CI job that is right half the time.
+
 **On the WebGPU path in a container:** three r185's WebGPU backend sends a `swizzle`
 texture-view property that Chromium 1194 rejects outright (`Failed to read the 'swizzle'
 property from 'GPUTextureViewDescriptor'`), so the page never finishes booting there. That
