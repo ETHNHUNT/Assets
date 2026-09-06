@@ -219,6 +219,17 @@ async function boot() {
        */
       pickAt(x, y) { ptr.set(x, y); return picker.pick(ptr, camera, { n: N, posCur, quatCur, active, halfSize: (i) => highlight.halfSize(i) }); },
 
+      /**
+       * Frame the current arrangement and report when the flight has landed.
+       *
+       * Framing is the one piece of camera work with a checkable postcondition: after
+       * it settles, every visible tile should be inside the frustum. Nothing else
+       * asserts that, and a fit that crops the helix or the towers looks like a design
+       * choice rather than a bug.
+       */
+      frameAll(dir) { frameCamera(dir); },
+      get flying() { return fly !== null; },
+
       /** Where tile i's centre lands in NDC, given the camera as it stands. */
       project(i) {
         const v = new THREE.Vector3(posCur[i * 3], posCur[i * 3 + 1], posCur[i * 3 + 2]);
@@ -969,23 +980,16 @@ function frameCamera(preferDir) {
   if (!any) return;
   const centre = box.getCenter(new THREE.Vector3());
   const size = box.getSize(new THREE.Vector3());
-  // Fit the box against both FOV axes. A bounding-sphere fudge factor is fine
-  // for the sphere but crops the helix top and bottom and the towers at the
-  // sides, because those are nothing like spherical.
   const tanV = Math.tan((camera.fov * Math.PI / 180) / 2);
   const tanH = tanV * camera.aspect;
   const depth = size.z * 0.5;
   const dist = Math.max(6,
     (size.y * 0.5) / tanV + depth,
     (size.x * 0.5) / tanH + depth) * 1.06;
-  // One fixed fog density cannot serve a 40-unit grid and a 300-unit carousel:
-  // tie it to the framed distance so every arrangement gets the same amount of
-  // atmosphere instead of the big ones going black.
-  if (scene.fog) scene.fog.density = Math.min(0.02, Math.max(0.0007, 0.5 / dist));
-
-  const dir = preferDir ? preferDir.clone().normalize()
-                        : camera.position.clone().sub(controls.target).normalize();
-  if (!isFinite(dir.x) || dir.lengthSq() < 1e-6) dir.set(0, 0.18, 1).normalize();
+  const dir0 = preferDir ? preferDir.clone().normalize()
+                         : camera.position.clone().sub(controls.target).normalize();
+  if (!isFinite(dir0.x) || dir0.lengthSq() < 1e-6) dir0.set(0, 0.18, 1).normalize();
+  const dir = dir0;
   // keep the subject clear of the detail panel when it is open
   const toP = centre.clone().add(dir.multiplyScalar(dist));
   const toT = centre.clone();
@@ -1013,7 +1017,16 @@ function setFly(fromT, toT, fromP, toP) {
     t: 1,
     duration: REDUCED ? 1 : 1000,
     ease: REDUCED ? 'linear' : createSpring({ stiffness: 92, damping: 19, mass: 1.1 }),
-    onComplete: () => { fly = null; flyAnim = null; },
+    onComplete: () => {
+      // Land it here rather than trusting tick() to have applied t = 1. Under
+      // prefers-reduced-motion the duration is 1 ms, so the animation finishes before
+      // a single frame runs: fly is nulled, the `if (fly)` block never sees it, and
+      // the camera simply never moves. Framing did nothing at all for anyone with
+      // reduced motion enabled — measured, camera unchanged at (0, 8, 96).
+      controls.target.copy(toT);
+      camera.position.copy(toP);
+      fly = null; flyAnim = null;
+    },
   });
 }
 function flyTo(i) {
