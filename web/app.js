@@ -294,11 +294,34 @@ async function boot() {
         for (let k = 0; k < steps; k++) physics.step();
         return { bodies: physics.count, steps, seeded: FLAGS.seed !== null };
       },
-      /** Place the camera deterministically — OrbitControls damping never settles on its own. */
+      /**
+       * Put the camera somewhere and make it stay there.
+       *
+       * Assigning camera.position is not enough, and quietly was not for a long time.
+       * A camera flight outranks it — tick() re-derives the position from `fly` every
+       * frame until the animation ends — and one runs for about a second after boot.
+       * So an early park slid from (0, 0, 96) to (-0.75, 7.01, 75.16) within 600 ms,
+       * most of the way to a different shot, while a later one held. Two framings of
+       * the same scene up to maxD 93 apart, and which you got depended on how many
+       * renders had already happened.
+       *
+       * So: cancel the flight first, then damping off and flush the pending deltas
+       * through update() before re-asserting the position update() may have moved.
+       * Only tests call this, so the interactive feel is untouched.
+       */
       park(x, y, z) {
+        // A camera flight outranks anything written to camera.position: tick() re-derives
+        // the position from `fly` on every frame until the animation ends. One is still
+        // running for a second or so after boot, which is what the drift actually was.
+        if (flyAnim) { flyAnim.pause(); flyAnim = null; }
+        fly = null;
+        clearTimeout(physFrameTimer);
+        controls.enableDamping = false;
         camera.position.set(x, y, z);
         controls.target.set(0, 0, 0);
-        controls.update();
+        controls.update();                 // applies and zeroes the pending deltas
+        camera.position.set(x, y, z);      // update() may have moved it; this is the truth
+        controls.target.set(0, 0, 0);
         camera.updateMatrixWorld(true);
       },
       get settled() { return morphCtl.settled; },
