@@ -24,6 +24,7 @@ import { PhysicsWorld } from './physics.js';
 import { MorphController } from './morph.js';
 import { computeLayout, FLAT } from './layouts.js';
 import { DetailCache } from './detail.js';
+import { Highlight } from './highlight.js';
 
 // --------------------------------------------------------------- flags ------
 /**
@@ -148,7 +149,7 @@ let posCur, posTo, quatCur, quatTo;      // aliases into morphCtl, for readabili
 let active = null;                       // Uint8Array: does record pass filters
 let hovered = -1, selected = -1;
 let mode = 'grid';
-const dimNow = [], focusNow = [];        // eased per-instance values
+let highlight = null;                    // owns aMeta.y/.z; see web/highlight.js
 
 const _m = new THREE.Matrix4(), _p = new THREE.Vector3(), _q = new THREE.Quaternion();
 const _s = new THREE.Vector3(1, 1, 1), _pa = new THREE.Vector3(), _pb = new THREE.Vector3();
@@ -302,6 +303,7 @@ async function boot() {
       },
       get settled() { return morphCtl.settled; },
       get physicsWorld() { return physics; },
+      get highlight() { return highlight; },
       get flags() { return { ...FLAGS }; },
       get counts() { return { instances: N, active: active.reduce((a, v) => a + v, 0) }; },
     };
@@ -409,6 +411,10 @@ function buildScene() {
   geo.setAttribute('aQuatB', aQuatB);
 
   // must precede tileMaterial(): the material samples the cache texture if it exists
+  highlight = new Highlight({
+    n: N, aMeta, lanes: { dim: M_DIM, focus: M_FOCUS }, reduced: REDUCED,
+  });
+
   if (FLAGS.lod) {
     detail = new DetailCache({
       n: N, records: DATA.records, attrs: { aMeta, aToPos },
@@ -429,7 +435,7 @@ function buildScene() {
     attrs: { aFromPD, aToPos, aQuatA, aQuatB },
   });
   ({ posCur, posTo, quatCur, quatTo } = morphCtl);
-  for (let i = 0; i < N; i++) { quatCur[i * 4 + 3] = 1; quatTo[i * 4 + 3] = 1; dimNow[i] = 1; focusNow[i] = 0; }
+  for (let i = 0; i < N; i++) { quatCur[i * 4 + 3] = 1; quatTo[i * 4 + 3] = 1; }
 
   active = new Uint8Array(N).fill(1);
   layout('grid', true);
@@ -786,7 +792,7 @@ addEventListener('pointermove', (e) => {
   // user cannot see.
   if (e.pointerType === 'touch') return;
   if (!onScene(e)) {                          // over the chrome: drop any hover
-    if (hovered >= 0) { hovered = -1; easeSettled = false; $('#tip').classList.remove('on'); }
+    if (hovered >= 0) { hovered = -1; highlight.invalidate(); $('#tip').classList.remove('on'); }
     return;
   }
   ptr.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
@@ -819,7 +825,7 @@ addEventListener('pointerup', (e) => {
   ptr.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
   const id = morphCtl.value < 1 ? -1 : pickInstance();
   if (id >= 0) {
-    hovered = id; easeSettled = false;
+    hovered = id; highlight.invalidate();
     selectIndex(id);
   } else if (physics?.ready) {                 // empty space in physics mode: shove
     ray.setFromCamera(ptr, camera);
@@ -829,9 +835,6 @@ addEventListener('pointerup', (e) => {
 });
 
 /** Visual half-extent of a tile, matching the scale the shader applies. */
-function tileHalf(i) {
-  return 0.5 * (1 + focusNow[i] * 0.30) * (0.40 + 0.60 * dimNow[i]);
-}
 
 const _ro = new THREE.Vector3(), _rd = new THREE.Vector3();
 const _inv = new THREE.Matrix4(), _lo = new THREE.Vector3(), _ld = new THREE.Vector3();
@@ -876,7 +879,7 @@ function pickInstance() {
     if (Math.abs(_ld.z) < 1e-6) continue;                     // ray parallel to the quad
     const t = -_lo.z / _ld.z;
     if (t < 0) continue;
-    const h = tileHalf(i);
+    const h = highlight.halfSize(i);
     if (Math.abs(_lo.x + _ld.x * t) <= h && Math.abs(_lo.y + _ld.y * t) <= h) return i;
   }
   return -1;
@@ -891,7 +894,7 @@ function pick() {
   const id = morphCtl.value < 1 ? -1 : pickInstance();
   if (id === hovered) return;
   hovered = id;
-  easeSettled = false;
+  highlight.invalidate();
   const tip = $('#tip');
   if (id < 0) { tip.classList.remove('on'); document.body.style.cursor = ''; return; }
   const r = DATA.records[id];
@@ -909,7 +912,7 @@ const esc = (t) => String(t == null ? '' : t).replace(/[&<>"]/g,
 function selectIndex(i) {
   selected = i;
   audio.select();
-  easeSettled = false;
+  highlight.invalidate();
   const r = DATA.records[i];
   $('#dname').textContent = r.n || r.t || 'Prompt';
   $('#dimg').src = `../assets/${r.th}`;
@@ -1018,7 +1021,7 @@ let pushedDetail = false;
 
 function closeDetail(fromPop) {
   selected = -1;
-  easeSettled = false;
+  highlight.invalidate();
   $('#detail').classList.remove('open');
   if (!fromPop && pushedDetail) { pushedDetail = false; history.back(); return; }
   pushedDetail = false;
@@ -1155,8 +1158,8 @@ function applyFilters() {
     if (ok) n++;
   }
   if (detail) detail.releaseInactive(active);
-  stageFilterSweep();
-  easeSettled = false;
+  highlight.stageSweep(posCur, controls.target);
+  highlight.invalidate();
   $('#count').textContent = `${n.toLocaleString()} of ${N.toLocaleString()}`;
   $('#empty').classList.toggle('on', n === 0);
   const wasNarrow = lastCount <= N * 0.25, isNarrow = n <= N * 0.25;
@@ -1173,26 +1176,7 @@ function applyFilters() {
  * far it is from what the camera is looking at, and the result resolves outward
  * from the centre of the view instead — the same wave the layout morph uses.
  */
-const FILTER_STAGGER = 0.30;             // seconds between the first tile and the last
-let filterDelay = null;                  // allocated on the first filter change
-let filterT = FILTER_STAGGER;            // >= the longest delay means "nothing pending"
 
-function stageFilterSweep() {
-  if (!filterDelay || filterDelay.length !== N) filterDelay = new Float32Array(N);
-  if (REDUCED) { filterDelay.fill(0); filterT = FILTER_STAGGER; return; }
-  const c = controls.target;
-  let maxD = 0;
-  for (let i = 0; i < N; i++) {
-    const a = i * 3;
-    const dx = posCur[a] - c.x, dy = posCur[a + 1] - c.y, dz = posCur[a + 2] - c.z;
-    const d = dx * dx + dy * dy + dz * dz;
-    filterDelay[i] = d;
-    if (d > maxD) maxD = d;
-  }
-  maxD = Math.sqrt(maxD) || 1;
-  for (let i = 0; i < N; i++) filterDelay[i] = Math.sqrt(filterDelay[i]) / maxD * FILTER_STAGGER;
-  filterT = 0;
-}
 
 function resetFilters() {
   $('#q').value = ''; $('#f-tool').value = ''; $('#f-model').value = '';
@@ -1230,7 +1214,6 @@ function copyPrompt() {
 
 // ---------------------------------------------------------------- loop ------
 let last = performance.now(), fpsAcc = 0, fpsN = 0;
-let easeSettled = false;
 const _camPrev = new THREE.Vector3();
 
 function tick() {
@@ -1243,20 +1226,7 @@ function tick() {
 
   if (detail) detail.stepFade(dt);
 
-  // ease per-instance dim/focus toward their targets. `easeSettled` skips the
-  // whole 2,619-wide sweep once nothing is moving, which is most of the time.
-  let touched = false;
-  if (filterT < FILTER_STAGGER) { filterT += dt; touched = true; }
-  if (!easeSettled) for (let i = 0; i < N; i++) {
-    // a tile holds its brightness until its own delay has elapsed
-    const dTo = !filterDelay || filterT >= filterDelay[i] ? (active[i] ? 1 : 0) : dimNow[i];
-    const fTo = (i === hovered ? 1 : 0) + (i === selected ? 0.7 : 0);
-    const d = dimNow[i] + (dTo - dimNow[i]) * Math.min(1, dt * 6);
-    const f = focusNow[i] + (Math.min(1, fTo) - focusNow[i]) * Math.min(1, dt * 10);
-    if (Math.abs(d - dimNow[i]) > 1e-4) { dimNow[i] = d; aMeta.array[i * 4 + M_DIM] = d; touched = true; }
-    if (Math.abs(f - focusNow[i]) > 1e-4) { focusNow[i] = f; aMeta.array[i * 4 + M_FOCUS] = f; touched = true; }
-  }
-  if (touched) aMeta.needsUpdate = true; else easeSettled = true;
+  highlight.step(dt, { active, hovered, selected });
 
   if (physics?.ready) physics.step();
 
