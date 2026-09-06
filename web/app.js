@@ -286,6 +286,7 @@ async function boot() {
         camera.updateMatrixWorld(true);
       },
       get settled() { return morph >= 1 && !morphAnim; },
+      get physicsWorld() { return physics; },
       get flags() { return { ...FLAGS }; },
       get counts() { return { instances: N, active: active.reduce((a, v) => a + v, 0) }; },
     };
