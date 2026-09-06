@@ -255,6 +255,58 @@ def check_labels(page):
           f"matching every label's stated count")
 
 
+def check_compare(page):
+    """Comparing several prompts at once, which is what a prompt library is for.
+
+    One record open answers "what is this". Two or more is a different question —
+    "how do these differ" — so the rail switches rather than trying to be both, and
+    the check holds it to that: the single-record body must be out of the way, every
+    compared record must be shown, and the cap must actually cap.
+
+    Six is the cap because past a handful the rail stops being readable, and because
+    what you want beyond that is a filter, not a longer list.
+    """
+    res = page.evaluate("""() => {
+      const A = window.__atlas;
+      A.clearHighlight();
+      A.setLayout('grid', true);
+      const order = A.order();
+      const out = {};
+
+      // one is not a comparison
+      out.one = A.compare([order[0]]);
+      // two or more is
+      out.three = A.compare(order.slice(0, 3));
+      // and the cap holds
+      out.tooMany = A.compare(order.slice(0, 12));
+      // the highlight has to show them, or they are only in the rail
+      const meta = A.mesh.geometry.getAttribute('aMeta');
+      A.compare(order.slice(0, 3));
+      out.focusBefore = order.slice(0, 3).map((i) => +meta.array[i * 4 + 2].toFixed(2));
+
+      // opening a single record ends the comparison
+      A.select(order[7]);
+      out.afterSelect = A.comparison;
+      A.closePanel(); A.clearHighlight();
+      return out;
+    }""")
+
+    if res["one"]["shown"] or res["one"]["singleHidden"]:
+        sys.exit(f"compare: one record is not a comparison, but the rail switched "
+                 f"anyway ({res['one']})")
+    if res["three"]["shown"] != 3 or not res["three"]["singleHidden"]:
+        sys.exit(f"compare: three records should show three blocks with the single "
+                 f"body hidden, got {res['three']}")
+    if len(res["tooMany"]["ids"]) != 6:
+        sys.exit(f"compare: asked for 12, kept {len(res['tooMany']['ids'])} — the cap "
+                 f"of 6 is not holding")
+    if res["afterSelect"]["ids"]:
+        sys.exit(f"compare: opening a single record left {res['afterSelect']['ids']} "
+                 f"in the comparison — the two states have to be exclusive")
+    print(f"  compare: 3 shown side by side, capped at "
+          f"{len(res['tooMany']['ids'])}, cleared by opening a record")
+
+
 def check_url(browser, base, viewport):
     """A view has to survive being sent to someone else.
 
@@ -901,6 +953,7 @@ def capture(backend, scenes, timeout_s=90):
         check_audio(page)
         check_sort(page)
         check_labels(page)
+        check_compare(page)
         check_url(browser, url, {"width": 1280, "height": 800})
         browser.close()
     httpd.shutdown()

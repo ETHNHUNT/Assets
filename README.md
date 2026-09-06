@@ -390,6 +390,13 @@ It has to be served over HTTP. Opening `web/index.html` from disk fails twice ov
 | **Helix** | a spiral column you can fly down |
 | **By model** | the twelve largest models as labelled blocks, the tail rolled into one — small multiples, so block sizes compare directly |
 
+**Shift-click compares.** Hold shift or cmd and click two to six tiles and the rail shows
+their prompts one under another, with the model and word count on each — which is the thing
+a prompt library is actually for, and the one action the atlas could not do. One record open
+answers *what is this*; two or more is a different question, so the rail switches rather than
+trying to be both. Six is the cap: past a handful the rail stops being readable, and what you
+want beyond that is a filter.
+
 **A view is a link.** Mode, search, all four filters and the sort order live in the query
 string, and the open record in the hash, so *"sphere, Wan 2.5, sorted by length, this
 record"* is something you can send rather than describe. Anything in the URL that no longer
@@ -694,6 +701,7 @@ tolerance, and they hold anywhere the code runs:
 | framing | frame each arrangement, let the flight land, and every visible tile must project inside NDC |
 | detail panel | 12 selections must leave **one** history entry, and each must show the record it was asked for |
 | sort | ordering by length is monotonic across the laid-out sequence, and actually moves tiles |
+| compare | two or more records switch the rail, every one is shown, the cap of six holds, and opening a record clears it |
 | url | a view driven in one page reopens identically in a fresh one, from the link alone |
 | detail nav | stepping follows the laid-out order, clamps at both ends, and counts within the filter |
 | labels | every cluster label isolates the model it names and returns exactly the count it claims; the rolled-up tail stays inert |

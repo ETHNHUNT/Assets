@@ -153,6 +153,20 @@ let morphCtl = null;                     // owns the four buffers below; see web
 let posCur, posTo, quatCur, quatTo;      // aliases into morphCtl, for readability at call sites
 let active = null;                       // Uint8Array: does record pass filters
 let hovered = -1, selected = -1;
+/**
+ * The comparison set: shift- or cmd-click to add a tile, up to six.
+ *
+ * Six because the rail can show that many prompt blocks before scrolling stops being
+ * reading and starts being hunting, and because comparing more than a handful of
+ * prompts side by side is not a thing anyone does — past that you want a filter.
+ *
+ * A flag array rather than a Set: the highlight sweep asks about membership for every
+ * tile every frame it runs, and 2,936 Set lookups a frame to light up at most six
+ * tiles is the wrong shape.
+ */
+const COMPARE_MAX = 6;
+let compareSet = [];
+let compareFlag = null;
 let mode = 'grid';
 let highlight = null;                    // owns aMeta.y/.z; see web/highlight.js
 
@@ -401,6 +415,12 @@ async function boot() {
       },
       /** Step the open record through the filtered set, as the arrows do. */
       step(delta) { stepDetail(delta); return $('#dpos').textContent; },
+      /** Build a comparison the way a shift-click does. */
+      compare(ids) { clearCompare(); for (const i of ids) toggleCompare(i); return this.comparison; },
+      get comparison() {
+        return { ids: [...compareSet], shown: $('#dcompare').hidden ? 0 : $('#dcompare').children.length,
+                 singleHidden: $('#dsingle').hidden, name: $('#dname').textContent };
+      },
       get nav() {
         return { pos: $('#dpos').textContent,
                  prevDisabled: $('#dprev').disabled, nextDisabled: $('#dnext').disabled };
@@ -1048,6 +1068,9 @@ addEventListener('pointerup', (e) => {
   const id = morphCtl.value < 1 ? -1 : picker.pick(ptr, camera, { n: N, posCur, quatCur, active, halfSize: (i) => highlight.halfSize(i) });
   if (id >= 0) {
     hovered = id; highlight.invalidate();
+    // Shift or cmd builds a comparison rather than replacing the open record — the
+    // same gesture every file list uses, so nobody has to be told.
+    if (e.shiftKey || e.metaKey || e.ctrlKey) { toggleCompare(id); return; }
     selectIndex(id);
   } else if (physics?.ready) {                 // empty space in physics mode: shove
     const r = picker.rayAt(ptr, camera);
@@ -1091,6 +1114,9 @@ const esc = (t) => String(t == null ? '' : t).replace(/[&<>"]/g,
 
 // -------------------------------------------------------------- detail ------
 function selectIndex(i) {
+  if (compareSet.length) clearCompare();
+  $('#dcompare').hidden = true;
+  $('#dsingle').hidden = false;
   selected = i;
   audio.select();
   highlight.invalidate();
@@ -1209,8 +1235,61 @@ function stepDetail(delta) {
   selectIndex(list[next]);
 }
 
+/** Add or remove a tile from the comparison, and redraw the rail. */
+function toggleCompare(i) {
+  if (!compareFlag) compareFlag = new Uint8Array(N);
+  const at = compareSet.indexOf(i);
+  if (at >= 0) { compareSet.splice(at, 1); compareFlag[i] = 0; }
+  else {
+    if (compareSet.length >= COMPARE_MAX) return;
+    compareSet.push(i); compareFlag[i] = 1;
+  }
+  highlight.invalidate();
+  renderCompare();
+}
+
+function clearCompare() {
+  for (const i of compareSet) compareFlag[i] = 0;
+  compareSet = [];
+  highlight.invalidate();
+  renderCompare();
+}
+
+/**
+ * Draw the comparison, or get out of the way.
+ *
+ * One tile selected is the ordinary panel; two or more is a different question —
+ * "how do these differ" rather than "what is this" — so the rail switches rather
+ * than trying to be both at once.
+ */
+function renderCompare() {
+  const on = compareSet.length >= 2;
+  $('#dcompare').hidden = !on;
+  $('#dsingle').hidden = on;
+  // One is a comparison waiting for its second, not a mistake to undo. Clearing here
+  // meant the first shift-click wiped itself and a second could never join it.
+  if (!on) return;
+  $('#dname').textContent = `Comparing ${compareSet.length}`;
+  $('#dcompare').innerHTML = compareSet.map((i) => {
+    const r = DATA.records[i];
+    return `<div class="cmp" data-i="${i}">
+      <img src="../assets/${esc(r.th)}" alt="">
+      <div style="min-width:0">
+        <div class="cm">${esc(r.m || 'no model')} · ${r.w || 0} words</div>
+        <div class="cp">${esc(r.p || '(no prompt text)')}</div>
+      </div>
+      <button class="cx" data-drop="${i}" aria-label="Remove">&times;</button>
+    </div>`;
+  }).join('');
+  $('#detail').classList.add('open');
+  updateDetailNav();
+}
+
 function closeDetail(fromPop) {
   selected = -1;
+  if (compareSet.length) clearCompare();
+  $('#dcompare').hidden = true;
+  $('#dsingle').hidden = false;
   highlight.invalidate();
   $('#detail').classList.remove('open');
   if (!fromPop && pushedDetail) { pushedDetail = false; history.back(); return; }
@@ -1284,6 +1363,10 @@ function buildUI() {
   $('#f-kind').onchange = applyFilters;
   $('#f-sort').onchange = () => { sortBy = $('#f-sort').value; layout(null); syncURL(); };
 
+  $('#dcompare').onclick = (e) => {
+    const b = e.target.closest('[data-drop]');
+    if (b) toggleCompare(+b.dataset.drop);
+  };
   $('#dprev').onclick = () => stepDetail(-1);
   $('#dnext').onclick = () => stepDetail(1);
 
@@ -1446,7 +1529,7 @@ function tick() {
 
   if (detail) detail.stepFade(dt);
 
-  highlight.step(dt, { active, hovered, selected });
+  highlight.step(dt, { active, hovered, selected, compare: compareFlag });
 
   if (physics?.ready) physics.step();
 
