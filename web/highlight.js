@@ -91,7 +91,7 @@ export class Highlight {
    * Ease every tile toward its target and write the two lanes. Returns early once
    * nothing has moved for a frame; see the note on `settled` above.
    */
-  step(dt, { active, hovered, selected }) {
+  step(dt, { active, hovered, selected, compare = null }) {
     const { n, aMeta, dimNow, focusNow, delay } = this;
     let touched = false;
     if (this.t < this.stagger) { this.t += dt; touched = true; }
@@ -99,7 +99,10 @@ export class Highlight {
       for (let i = 0; i < n; i++) {
         // a tile holds its brightness until its own delay has elapsed
         const dTo = !delay || this.t >= delay[i] ? (active[i] ? 1 : 0) : dimNow[i];
-        const fTo = (i === hovered ? 1 : 0) + (i === selected ? 0.7 : 0);
+        // A compared tile reads like a selected one, because that is what it is —
+        // part of the set being looked at, just several at once.
+        const fTo = (i === hovered ? 1 : 0) + (i === selected ? 0.7 : 0)
+                  + (compare && compare[i] ? 0.7 : 0);
         const d = dimNow[i] + (dTo - dimNow[i]) * Math.min(1, dt * 6);
         const f = focusNow[i] + (Math.min(1, fTo) - focusNow[i]) * Math.min(1, dt * 10);
         if (Math.abs(d - dimNow[i]) > 1e-4) {

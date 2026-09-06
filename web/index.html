@@ -72,6 +72,15 @@ select:focus{border-color:var(--acc)}
 #detail.open{transform:none}
 .dhead{padding:14px 16px;border-bottom:1px solid var(--line);display:flex;gap:10px;align-items:flex-start}
 .dhead h2{margin:0;font-size:14px;font-weight:650;flex:1;line-height:1.35}
+#dcompare .cmp{border-bottom:1px solid var(--line);padding:12px 0;display:flex;gap:10px}
+#dcompare .cmp:last-child{border-bottom:0}
+#dcompare .cmp img{width:64px;height:64px;object-fit:cover;border-radius:6px;flex:none}
+#dcompare .cmp .cm{font-size:11px;color:var(--dim);margin-bottom:4px}
+#dcompare .cmp .cp{font-size:12px;line-height:1.45;white-space:pre-wrap;
+  max-height:9.5em;overflow:auto}
+#dcompare .cmp .cx{background:none;border:0;color:var(--dim);cursor:pointer;
+  font-size:15px;padding:0 4px;align-self:flex-start}
+#dcompare .cmp .cx:hover{color:var(--fg)}
 .dnav{display:flex;align-items:center;gap:2px}
 .dnav button{background:none;border:0;color:var(--dim);font-size:19px;line-height:1;
   padding:1px 7px;cursor:pointer;border-radius:6px}
@@ -218,7 +227,8 @@ kbd{background:#141822;border:1px solid var(--line);border-radius:4px;padding:0 
     </span>
     <button id="dclose" aria-label="Close">&times;</button>
   </div>
-  <div class="dbody">
+  <div class="dbody" id="dcompare" hidden></div>
+  <div class="dbody" id="dsingle">
     <img id="dimg" alt="">
     <div class="tags" id="dtags"></div>
     <div class="prompt" id="dprompt"></div>
