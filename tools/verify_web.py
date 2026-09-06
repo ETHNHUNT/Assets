@@ -154,6 +154,64 @@ def serve(port):
     return httpd
 
 
+def check_framing(page, modes=("grid", "sphere", "helix", "towers")):
+    """Framing an arrangement must actually fit it on screen.
+
+    frameCamera() fits the bounding box against both FOV axes rather than using a
+    bounding sphere, and the comment says why: a sphere fudge factor crops the helix
+    top and bottom and the towers at the sides, because neither is remotely spherical.
+    Nothing checked that claim. A fit that crops looks like a framing choice rather
+    than a bug, which is the kind of regression that survives.
+
+    So: frame it, let the flight land, then project every visible tile and require it
+    inside NDC. Pure maths on both sides, no baseline and no tolerance — the same
+    property that makes the picking round trip machine-independent.
+
+    A small margin is allowed past the edge because the fit adds 6% headroom and then
+    shifts sideways when the detail panel is open; the check is "nothing is cropped",
+    not "the fit is tight".
+    """
+    for mode in modes:
+        res = page.evaluate("""async ([mode]) => {
+          const A = window.__atlas;
+          A.clearHighlight();
+          A.setLayout(mode, true);
+          A.frameAll();
+          for (let k = 0; k < 400; k++) {
+            if (!A.flying) break;
+            await new Promise(r => requestAnimationFrame(r));
+          }
+          // project() reads camera.matrixWorldInverse, which is only refreshed when a
+          // frame renders. Under reduced motion the flight ends in 1 ms, so this loop
+          // can exit before any frame has run and the projection would be computed
+          // against the camera's previous transform — which reads as a crop that is
+          // not there. Ask for the matrix directly rather than hoping a frame landed.
+          A.camera.updateMatrixWorld(true);
+          const n = A.counts.instances;
+          let worstX = 0, worstY = 0, tested = 0, behind = 0;
+          for (let i = 0; i < n; i += 7) {
+            const [x, y, z] = A.project(i);
+            if (z > 1) { behind++; continue; }          // behind the camera
+            tested++;
+            worstX = Math.max(worstX, Math.abs(x));
+            worstY = Math.max(worstY, Math.abs(y));
+          }
+          return { flying: A.flying, tested, behind,
+                   worstX: +worstX.toFixed(3), worstY: +worstY.toFixed(3) };
+        }""", [mode])
+        if res["flying"]:
+            sys.exit(f"framing {mode}: the flight never landed")
+        if not res["tested"]:
+            sys.exit(f"framing {mode}: nothing was in front of the camera to check")
+        worst = max(res["worstX"], res["worstY"])
+        if worst > 1.0:
+            sys.exit(f"framing {mode}: the fit crops — a tile projects to {worst} in NDC, "
+                     f"outside the [-1, 1] the screen shows (x {res['worstX']}, "
+                     f"y {res['worstY']}). frameCamera is not fitting both FOV axes.")
+        print(f"  framing {mode}: fits, worst NDC {worst} "
+              f"({res['tested']} sampled, {res['behind']} behind)")
+
+
 def check_picking(page, sample=240):
     """Every tile must be pickable at its own centre.
 
@@ -469,6 +527,12 @@ def capture(backend, scenes, timeout_s=90):
                 print(f"  {name}: {d['bound']}/{d['slots']} detail tiles bound")
             page.wait_for_timeout(250)          # let one frame with the new camera land
             out[name] = page.evaluate("async () => await window.__atlas.signature(512, 16)")
+
+        # After the captures, not before: frameCamera ties fog density to the framed
+        # distance, so running it first leaves every scene rendering through somebody
+        # else's fog. That read as maxD 173 across the board — the scenes were fine and
+        # the check had moved the weather.
+        check_framing(page)
         browser.close()
     httpd.shutdown()
     if errors:
