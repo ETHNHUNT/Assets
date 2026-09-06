@@ -1141,6 +1141,38 @@ const esc = (t) => String(t == null ? '' : t).replace(/[&<>"]/g,
   (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
 // -------------------------------------------------------------- detail ------
+/**
+ * Highlight the references a prompt makes to its own inputs.
+ *
+ * 222 of these name something — `@truck1`, `@fantasy-dragon`, `<<<video_1>>>` — and
+ * that token is the part someone reading the prompt is looking for, because it is
+ * where the prompt stops describing and starts pointing. Escaped first: this is the
+ * one place record text becomes markup.
+ */
+function markTokens(text) {
+  return esc(text).replace(/(&lt;&lt;&lt;[^&]+?&gt;&gt;&gt;|@[a-zA-Z][\w-]*)/g,
+                           '<mark>$1</mark>');
+}
+
+/**
+ * The spec sheet. Label left, value right, and nothing shown that is empty — a row
+ * reading "Styles —" tells you less than no row at all.
+ */
+function detailRows(r) {
+  const rows = [
+    ['Model', r.m],
+    ['Tool', r.t],
+    ['Kind', r.k],
+    ['Quality', r.c],
+    ['Motion', r.g],
+    ['Words', r.w ? r.w.toLocaleString() : ''],
+    ['Style', (r.s || []).slice(0, 3).join(', ')],
+    ['Subject', (r.v || []).slice(0, 3).join(', ')],
+  ];
+  return rows.filter(([, v]) => v)
+    .map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('');
+}
+
 function selectIndex(i) {
   if (compareSet.length) clearCompare();
   $('#dcompare').hidden = true;
@@ -1150,9 +1182,12 @@ function selectIndex(i) {
   highlight.invalidate();
   const r = DATA.records[i];
   $('#dname').textContent = r.n || r.t || 'Prompt';
+  $('#dsub').textContent = [r.m || 'no model', r.k].filter(Boolean).join(' · ');
   $('#dimg').src = `../assets/${r.th}`;
-  $('#dprompt').textContent = r.p || '(this preset publishes no prompt text)';
+  $('#dprompt').innerHTML = r.p ? markTokens(r.p)
+    : '<em style="color:var(--faint)">This preset publishes no prompt text.</em>';
   $('#dcopy').style.display = r.p ? '' : 'none';
+  $('#ddetails').innerHTML = detailRows(r);
   // Tags that filter. A pill naming a model you cannot click is decoration; the same
   // argument as the cluster labels, and the same fix. Only the three that map onto a
   // filter carry a target — style and subject pills stay inert rather than pretending.
@@ -1432,6 +1467,11 @@ function buildUI() {
     const b = e.target.closest('[data-drop]');
     if (b) toggleCompare(+b.dataset.drop);
   };
+  $('#dtoggle').onclick = () => {
+    const sec = $('#dtoggle').closest('.sec');
+    const open = !sec.classList.toggle('closed');
+    $('#dtoggle').setAttribute('aria-expanded', String(open));
+  };
   $('#dprev').onclick = () => stepDetail(-1);
   $('#dnext').onclick = () => stepDetail(1);
 
@@ -1585,17 +1625,17 @@ function copyPrompt() {
   const b = $('#dcopy'), text = DATA.records[selected]?.p || '';
   const done = (msg, cls) => {
     b.textContent = msg; if (cls) b.classList.add(cls);
-    setTimeout(() => { b.textContent = 'Copy prompt'; b.classList.remove('ok'); }, 1300);
+    setTimeout(() => { b.textContent = 'Copy'; b.classList.remove('ok'); }, 1300);
   };
   const fallback = () => {
     const ta = document.createElement('textarea');
     ta.value = text; ta.style.position = 'fixed'; ta.style.top = '-1000px';
     document.body.appendChild(ta); ta.select();
     const ok = document.execCommand('copy'); document.body.removeChild(ta);
-    done(ok ? 'Copied ✓' : 'Press ⌘/Ctrl+C', ok ? 'ok' : null);
+    done(ok ? 'Copied' : '⌘C', ok ? 'ok' : null);
   };
   if (navigator.clipboard && isSecureContext) {
-    navigator.clipboard.writeText(text).then(() => done('Copied ✓', 'ok'), fallback);
+    navigator.clipboard.writeText(text).then(() => done('Copied', 'ok'), fallback);
   } else fallback();
 }
 
