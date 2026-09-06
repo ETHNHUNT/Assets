@@ -226,7 +226,7 @@ async function boot() {
        *
        * Framing is the one piece of camera work with a checkable postcondition: after
        * it settles, every visible tile should be inside the frustum. Nothing else
-       * asserts that, and a fit that crops the helix or the towers looks like a design
+       * asserts that, and a fit that crops the helix looks like a design
        * choice rather than a bug.
        */
       frameAll(dir) { frameCamera(dir); },
@@ -659,7 +659,7 @@ function buildLabels() {
 
 const MODES = {
   grid: 'Grid', sphere: 'Sphere', helix: 'Helix',
-  clusters: 'By model', towers: 'By length', physics: 'Physics',
+  clusters: 'By model', physics: 'Physics',
 };
 
 /** Indices that currently pass the filters, in atlas order. */
@@ -1029,8 +1029,7 @@ function buildUI() {
       }
       else {
         layout(k);
-        frameCamera(k === 'clusters' || k === 'towers'
-          ? new THREE.Vector3(0, 0.13, 1) : undefined);
+        frameCamera(k === 'clusters' ? new THREE.Vector3(0, 0.13, 1) : undefined);
       }
     };
     modes.appendChild(b);

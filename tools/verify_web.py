@@ -102,7 +102,6 @@ SCENES = [
     ("grid-angled",  "grid",     (60, 34, 70),  None, None),
     ("sphere",       "sphere",   (0, 10, 120),  None, None),
     ("helix",        "helix",    (0, 0, 130),   None, None),
-    ("towers",       "towers",   (0, 20, 150),  None, None),
     ("by-model",     "model",    (0, 20, 150),  None, None),
     ("physics-pile", "physics",  (0, 6, 120),   240,  None),
     # Close enough to trip the detail cache. A tile has to cover DETAIL_MIN_PX (74px)
@@ -322,12 +321,12 @@ def check_detail_panel(page, runs=12):
           f"({nprompt} with prompt text), closes clean")
 
 
-def check_framing(page, modes=("grid", "sphere", "helix", "towers")):
+def check_framing(page, modes=("grid", "sphere", "helix", "clusters")):
     """Framing an arrangement must actually fit it on screen.
 
     frameCamera() fits the bounding box against both FOV axes rather than using a
     bounding sphere, and the comment says why: a sphere fudge factor crops the helix
-    top and bottom and the towers at the sides, because neither is remotely spherical.
+    top and bottom, which is nothing like spherical.
     Nothing checked that claim. A fit that crops looks like a framing choice rather
     than a bug, which is the kind of regression that survives.
 
