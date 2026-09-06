@@ -23,6 +23,7 @@ import { AtlasAudio } from './audio.js';
 import { PhysicsWorld } from './physics.js';
 import { MorphController } from './morph.js';
 import { computeLayout, FLAT } from './layouts.js';
+import { Picker } from './picking.js';
 import { DetailCache } from './detail.js';
 import { Highlight } from './highlight.js';
 
@@ -151,8 +152,7 @@ let hovered = -1, selected = -1;
 let mode = 'grid';
 let highlight = null;                    // owns aMeta.y/.z; see web/highlight.js
 
-const _m = new THREE.Matrix4(), _p = new THREE.Vector3(), _q = new THREE.Quaternion();
-const _s = new THREE.Vector3(1, 1, 1), _pa = new THREE.Vector3(), _pb = new THREE.Vector3();
+const _pa = new THREE.Vector3(), _pb = new THREE.Vector3();
 const _qa = new THREE.Quaternion(), _qb = new THREE.Quaternion();
 
 async function fetchJSON(url, label) {
@@ -208,7 +208,7 @@ async function boot() {
       get pipeline() { return pipeline; }, setBloom,
       get detail() { return detail ? detail.stats : null; },
       forceDetail() { if (detail) { detail.due = 0; detail.update(camera, posCur, active); } },
-      pickNow() { return pickInstance(); },
+      pickNow() { return picker.pick(ptr, camera, { n: N, posCur, quatCur, active, halfSize: (i) => highlight.halfSize(i) }); },
 
       /**
        * Aim at a normalised device coordinate and pick, the way a pointer would.
@@ -217,7 +217,7 @@ async function boot() {
        * tile. Pure maths on both sides, so the answer is the same on any machine —
        * which a rendered frame is not.
        */
-      pickAt(x, y) { ptr.set(x, y); return pickInstance(); },
+      pickAt(x, y) { ptr.set(x, y); return picker.pick(ptr, camera, { n: N, posCur, quatCur, active, halfSize: (i) => highlight.halfSize(i) }); },
 
       /** Where tile i's centre lands in NDC, given the camera as it stands. */
       project(i) {
@@ -836,7 +836,6 @@ async function startPhysics() {
 function stopPhysics() { if (physics) physics.stop(); }
 
 // --------------------------------------------------------------- picking ----
-const ray = new THREE.Raycaster();
 const ptr = new THREE.Vector2(-9, -9);
 let pointerMoved = false, downAt = null;
 
@@ -877,67 +876,21 @@ addEventListener('pointerup', (e) => {
   // wherever the pointer was last seen — on a phone that is a different record
   // entirely, and it opens silently with no sign anything went wrong.
   ptr.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
-  const id = morphCtl.value < 1 ? -1 : pickInstance();
+  const id = morphCtl.value < 1 ? -1 : picker.pick(ptr, camera, { n: N, posCur, quatCur, active, halfSize: (i) => highlight.halfSize(i) });
   if (id >= 0) {
     hovered = id; highlight.invalidate();
     selectIndex(id);
   } else if (physics?.ready) {                 // empty space in physics mode: shove
-    ray.setFromCamera(ptr, camera);
+    const r = picker.rayAt(ptr, camera);
     const at = new THREE.Vector3();
-    if (ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 20), at)) physics.shove(at);
+    if (r.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 20), at)) physics.shove(at);
   }
 });
 
 /** Visual half-extent of a tile, matching the scale the shader applies. */
 
-const _ro = new THREE.Vector3(), _rd = new THREE.Vector3();
-const _inv = new THREE.Matrix4(), _lo = new THREE.Vector3(), _ld = new THREE.Vector3();
-const _cand = [];
 
-/**
- * three's InstancedMesh.raycast intersects all 2,619 instances — 9.3 ms per
- * pointer move, over half a 60 fps frame, spent exactly while the user is
- * interacting. A BVH does not help: the geometry is one quad, so the cost is
- * the instance loop. Reject on perpendicular distance from the ray first (a
- * dot product per tile, no matrix work), then intersect only the survivors.
- */
-function pickInstance() {
-  ray.setFromCamera(ptr, camera);
-  _ro.copy(ray.ray.origin); _rd.copy(ray.ray.direction);
-  _cand.length = 0;
-
-  const MAX_PERP2 = 0.92 * 0.92;         // half-diagonal of a focused tile, squared
-  for (let i = 0; i < N; i++) {
-    if (!active[i]) continue;
-    const a = i * 3;
-    const dx = posCur[a] - _ro.x, dy = posCur[a + 1] - _ro.y, dz = posCur[a + 2] - _ro.z;
-    const t = dx * _rd.x + dy * _rd.y + dz * _rd.z;
-    if (t <= 0) continue;                                     // behind the camera
-    if (dx * dx + dy * dy + dz * dz - t * t > MAX_PERP2) continue;
-    _cand.push(i, t);
-  }
-  if (!_cand.length) return -1;
-
-  // nearest first, so the first exact hit wins
-  const order = [];
-  for (let k = 0; k < _cand.length; k += 2) order.push(k);
-  order.sort((p, q) => _cand[p + 1] - _cand[q + 1]);
-
-  for (const k of order) {
-    const i = _cand[k];
-    _p.set(posCur[i * 3], posCur[i * 3 + 1], posCur[i * 3 + 2]);
-    _q.set(quatCur[i * 4], quatCur[i * 4 + 1], quatCur[i * 4 + 2], quatCur[i * 4 + 3]);
-    _inv.copy(_m.compose(_p, _q, _s)).invert();
-    _lo.copy(_ro).applyMatrix4(_inv);
-    _ld.copy(_rd).transformDirection(_inv);
-    if (Math.abs(_ld.z) < 1e-6) continue;                     // ray parallel to the quad
-    const t = -_lo.z / _ld.z;
-    if (t < 0) continue;
-    const h = highlight.halfSize(i);
-    if (Math.abs(_lo.x + _ld.x * t) <= h && Math.abs(_lo.y + _ld.y * t) <= h) return i;
-  }
-  return -1;
-}
+const picker = new Picker();
 
 function pick() {
   if (COARSE) return;                          // no hover to compute
@@ -945,7 +898,7 @@ function pick() {
   pointerMoved = false;
   // mid-morph the CPU copy of the positions is the start of the flight, not
   // where the tiles are drawn, so a hover then lands on the wrong tile
-  const id = morphCtl.value < 1 ? -1 : pickInstance();
+  const id = morphCtl.value < 1 ? -1 : picker.pick(ptr, camera, { n: N, posCur, quatCur, active, halfSize: (i) => highlight.halfSize(i) });
   if (id === hovered) return;
   hovered = id;
   highlight.invalidate();
