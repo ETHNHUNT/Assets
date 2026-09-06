@@ -18,7 +18,7 @@ import { animate, createSpring } from 'animejs';
 import { AtlasAudio } from './audio.js';
 import { PhysicsWorld } from './physics.js';
 import { MorphController } from './morph.js';
-import { computeLayout, FLAT, NO_MODEL_LABEL } from './layouts.js';
+import { computeLayout, FLAT, NO_MODEL_LABEL, DENSITY } from './layouts.js';
 import { Picker } from './picking.js';
 import { CameraFlight, fitDistance, fitSphereDistance } from './camera.js';
 import { tileMaterial } from './material.js';
@@ -406,6 +406,8 @@ async function boot() {
        * motion; this covers the order.
        */
       setSort(k) { sortBy = k; $('#f-sort').value = k; layout(null, true); },
+      setDensity(k) { density = k; $('#f-density').value = k; },
+      setTail(on) { expandTail = !!on; },
       /** The order tiles were laid out in, which is the thing a sort has to change. */
       order() { return activeList(); },
       /** The cluster labels and what each one isolates, for a test to drive. */
@@ -416,6 +418,12 @@ async function boot() {
         }));
       },
       isolate(key) { isolateModel(key); return $('#count').textContent; },
+      /** Whether the labels can actually be seen, not merely whether they exist. */
+      labelsVisible() {
+        if (!labelGroup || !labelGroup.children.length) return { visible: false, opacity: 0 };
+        return { visible: labelGroup.visible,
+                 opacity: labelGroup.children[0].material.opacity };
+      },
       /** The shareable part of the URL — everything but the flags. */
       get url() {
         const p = new URLSearchParams(location.search);
@@ -817,6 +825,15 @@ function cmpText(x, y) {
 }
 
 let sortBy = '';
+let density = 'default';
+/**
+ * Whether the rolled-up cluster tail is opened into its own blocks.
+ *
+ * Twelve models plus "the rest" is the right first view — one model holds 1,335 of
+ * 2,936 records and the tail is a long thin nothing — but "the rest" is 28 models
+ * somebody may actually want to see. It opens on demand rather than never.
+ */
+let expandTail = false;
 
 /**
  * The parts of the view that belong in the URL, and what they are called there.
@@ -839,6 +856,8 @@ const URL_KEYS = {
   style: () => $('#f-style').value,
   kind: () => $('#f-kind').value,
   sort: () => sortBy,
+  density: () => (density === 'default' ? '' : density),
+  tail: () => (expandTail ? '1' : ''),
 };
 
 /** Write the current view into the query string, leaving flags and the hash alone. */
@@ -876,6 +895,11 @@ function readURL() {
     sortBy = p.get('sort');
     $('#f-sort').value = sortBy;
   }
+  if (p.get('density') && DENSITY[p.get('density')]) {
+    density = p.get('density');
+    $('#f-density').value = density;
+  }
+  expandTail = p.get('tail') === '1';
 }
 
 function activeList() {
@@ -938,6 +962,7 @@ function layout(next, instant) {
   const list = activeList();
   const { out, labels } = computeLayout(mode, {
     total: N, list, records: DATA.records, viewAspect, posCur,
+    pitch: DENSITY[density], expandTail,
   });
 
   groupLabels.length = 0;
@@ -1095,6 +1120,23 @@ function pickLabel() {
  * captions on a poster. A heading that tells you a model holds 1,338 records and
  * cannot show you them is describing the work rather than doing it.
  */
+/** Open the rolled-up tail into its own blocks, and frame what appeared. */
+function openTail() {
+  expandTail = true;
+  layout(null);
+  frameCamera(new THREE.Vector3(0, 0.13, 1));
+  say('Expanded the smaller models.');
+  syncURL();
+}
+
+/** The rolled-up tail under the pointer — the one label that opens rather than filters. */
+function pickLabelTail() {
+  if (!labelGroup || expandTail) return false;
+  const r = picker.rayAt(ptr, camera);
+  const hit = r.intersectObjects(labelGroup.children, false)[0];
+  return !!(hit && hit.object.userData.key === null);
+}
+
 function isolateModel(key) {
   $('#q').value = '';
   // The block for unattributed records is labelled in words; the filter needs the
@@ -1126,6 +1168,7 @@ addEventListener('pointerup', (e) => {
   // would hand every label click to whatever tile happens to be behind it.
   const label = pickLabel();
   if (label) { isolateModel(label); return; }
+  if (pickLabelTail()) { openTail(); return; }
   const id = morphCtl.value < 1 ? -1 : picker.pick(ptr, camera, { n: N, posCur, quatCur, active, halfSize: (i) => highlight.halfSize(i) });
   if (id >= 0) {
     hovered = id; highlight.invalidate();
@@ -1415,6 +1458,31 @@ function moveCursor(delta) {
   const r = DATA.records[kbAt];
   say(`${r.n || r.t || 'Prompt'}, ${r.m || 'no model'}, ${r.w || 0} words. `
       + `${next + 1} of ${list.length}.`);
+  keepCursorInView();
+}
+
+/**
+ * Bring the cursor's tile into view if it has left it.
+ *
+ * This is what makes the arrows a scrubber rather than a way of losing your place.
+ * On the helix the order runs down the spine, so holding an arrow travels the coil;
+ * on the sphere it walks the shell. Without this the cursor cheerfully wanders off
+ * the back of the arrangement and the screen never changes.
+ *
+ * A pan, not a zoom: the camera keeps its distance and its direction and only moves
+ * what it is looking at. Flying to each tile would turn a scrub into a fairground
+ * ride, and re-framing on every step would never settle.
+ */
+function keepCursorInView() {
+  if (kbAt < 0) return;
+  const a = kbAt * 3;
+  _pv.set(posCur[a], posCur[a + 1], posCur[a + 2]);
+  const to = _pv.clone();
+  _pv.project(camera);
+  const out = _pv.z > 1 || Math.abs(_pv.x) > 0.72 || Math.abs(_pv.y) > 0.72;
+  if (!out) return;
+  const offset = camera.position.clone().sub(controls.target);
+  flight.to(controls.target.clone(), to, camera.position.clone(), to.clone().add(offset));
 }
 
 /** How far one row is, so up and down mean a row rather than a tile. */
@@ -1551,6 +1619,8 @@ function buildUI() {
     if (k === mode) b.classList.add('on');
     b.onclick = async () => {
       [...modes.children].forEach((c) => c.classList.toggle('on', c === b));
+      // `i` only means something on the sphere, so it is only offered there.
+      $('#foot').classList.toggle('sphere', k === 'sphere');
       layout(k);
       syncURL();
       frameCamera(k === 'clusters' ? new THREE.Vector3(0, 0.13, 1) : undefined);
@@ -1572,6 +1642,12 @@ function buildUI() {
   }
   $('#f-kind').onchange = applyFilters;
   $('#f-sort').onchange = () => { sortBy = $('#f-sort').value; layout(null); syncURL(); };
+  $('#f-density').onchange = () => {
+    density = $('#f-density').value;
+    layout(null);
+    frameCamera();                          // the whole arrangement just changed size
+    syncURL();
+  };
 
   $('#dcompare').onclick = (e) => {
     const b = e.target.closest('[data-drop]');
@@ -1670,6 +1746,7 @@ function buildUI() {
   readURL();
   [...$('#modes').children].forEach((c) => c.classList.toggle('on', c.dataset.mode === mode));
   $('#f-sort').value = sortBy;
+  $('#f-density').value = density;
   applyFilters();
 }
 
@@ -1716,6 +1793,7 @@ function applyFilters() {
 
 
 function resetFilters() {
+  expandTail = false;
   $('#q').value = ''; $('#f-tool').value = ''; $('#f-model').value = '';
   $('#f-style').value = ''; $('#f-kind').value = '';
   applyFilters();
@@ -1775,7 +1853,14 @@ function tick() {
   flight.apply();
 
   if (labelGroup) {
-    const a = physics?.ready ? 0 : morphCtl.value;
+    // Hidden while things are moving, not while a solver merely exists. This read
+    // `physics?.ready ? 0 : morphCtl.value`, which was right when physics was a view
+    // you switched into and the atlas fell into a pile — labels have no business
+    // floating over that. Once the solver became how every arrangement moves,
+    // `ready` was true always, so every label in every view was drawn at zero
+    // opacity. Present, pickable, invisible.
+    const moving = physics?.ready ? !physics.asleep : morphCtl.value < 1;
+    const a = moving ? 0 : 1;
     labelGroup.visible = a > 0.05;
     labelGroup.children.forEach((m) => {
       m.material.opacity = a;

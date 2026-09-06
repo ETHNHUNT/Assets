@@ -218,7 +218,7 @@ a.src:hover{color:var(--acc)}
   background:linear-gradient(0deg,rgba(7,8,12,.92) 35%,rgba(7,8,12,0))}
 #foot kbd,#foot #fps{pointer-events:auto}
 #fps{color:var(--faint);font-variant-numeric:tabular-nums}
-#foot .hint-phys{display:none} #foot.phys .hint-phys{display:inline} #foot.phys .hint-default{display:none}
+#foot .hint-sphere{display:none} #foot.sphere .hint-sphere{display:inline}
 kbd{background:var(--s1);border-radius:var(--r1);padding:1px 5px;font:inherit;
   font-size:10px;color:var(--mut)}
 #empty{position:fixed;z-index:22;left:50%;top:50%;transform:translate(-50%,-50%);
@@ -299,6 +299,11 @@ kbd{background:var(--s1);border-radius:var(--r1);padding:1px 5px;font:inherit;
     <select id="f-model"><option value="">All models</option></select>
     <select id="f-style"><option value="">All styles</option></select>
     <select id="f-kind"><option value="">Image and video</option><option value="video">Video only</option><option value="image">Image only</option></select>
+    <select id="f-density" title="How tightly tiles are packed">
+      <option value="default">Spacing: default</option>
+      <option value="poster">Spacing: tight</option>
+      <option value="comfortable">Spacing: airy</option>
+    </select>
     <select id="f-sort" title="Order tiles are laid out in">
       <option value="">Order: tool, then model</option>
       <option value="length">Order: prompt length</option>
@@ -313,8 +318,7 @@ kbd{background:var(--s1);border-radius:var(--r1);padding:1px 5px;font:inherit;
   <span class="hint-default"><kbd>drag</kbd> orbit &nbsp; <kbd>scroll</kbd> zoom &nbsp;
   <kbd>&larr;&rarr;</kbd> move &nbsp; <kbd>enter</kbd> open &nbsp; <kbd>shift-click</kbd> compare &nbsp;
   <kbd>/</kbd> search &nbsp; <kbd>esc</kbd> close</span>
-  <span class="hint-phys"><kbd>drag</kbd> orbit &nbsp; <kbd>click a tile</kbd> inspect &nbsp;
-  <kbd>click empty space</kbd> shove the pile</span><br>
+  <span class="hint-sphere"><kbd>i</kbd> inside the shell</span><br>
   <span id="fps"></span>
 </div>
 

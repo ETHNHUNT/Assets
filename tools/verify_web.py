@@ -219,13 +219,27 @@ def check_labels(page):
     model — "12 smaller models" is a bucket, and filtering to a model of that name
     would match nothing at all.
     """
-    res = page.evaluate("""() => {
+    res = page.evaluate("""async () => {
       const A = window.__atlas;
       A.clearHighlight();
       A.setLayout('clusters', true);
+      // Let it settle and let frames run. Reading straight after setLayout reads the
+      // opacity the material was created with, not the one it is drawn at — which is
+      // how this passed while every label was invisible.
+      for (let k = 0; k < 240; k++) {
+        await new Promise(r => requestAnimationFrame(r));
+        const pw = A.physicsWorld;
+        if (!pw || pw.asleep) break;
+      }
+      await new Promise(r => requestAnimationFrame(r));
       const labels = A.labels();
+      // Present is not the same as visible. Every one of these was drawn at zero
+      // opacity for eleven merges while this check happily reported them working,
+      // because it asked whether they isolate and never whether anyone can see them.
+      const shown = A.labelsVisible();
       const clickable = labels.filter((l) => l.key);
-      const out = { total: labels.length, clickable: clickable.length, checked: [] };
+      const out = { total: labels.length, clickable: clickable.length,
+                    visible: shown.visible, opacity: shown.opacity, checked: [] };
       for (const l of clickable) {
         const shown = A.isolate(l.key);
         const n = parseInt(shown.replace(/,/g, ''), 10);
@@ -234,6 +248,10 @@ def check_labels(page):
       A.clearHighlight();
       return out;
     }""")
+    if not res["visible"] or res["opacity"] < 0.9:
+        sys.exit(f"labels: the cluster labels are drawn at opacity {res['opacity']} "
+                 f"(group visible={res['visible']}) once the arrangement has settled — "
+                 f"they are present and pickable and nobody can see them")
     if not res["clickable"]:
         sys.exit("labels: no cluster label carries a model to isolate")
     if res["clickable"] >= res["total"]:
@@ -249,8 +267,8 @@ def check_labels(page):
         sys.exit(f"labels: a label's count is not what isolating it returns, e.g. "
                  f"{lying[:3]} (as key/got/claimed). The heading is describing a set "
                  f"the filter does not produce.")
-    print(f"  labels: {res['clickable']} of {res['total']} isolate a model "
-          f"(tail correctly inert), e.g. "
+    print(f"  labels: {res['clickable']} of {res['total']} isolate a model, drawn at "
+          f"opacity {res['opacity']} (tail correctly inert), e.g. "
           f"{res['checked'][0]['key']} -> {res['checked'][0]['n']} records, "
           f"matching every label's stated count")
 
@@ -315,6 +333,71 @@ def check_keyboard(page):
                  f"not say how much is now shown")
     print(f"  keyboard: canvas focusable and named, cursor walks the laid-out order, "
           f"clamps, and releases on a filter ({res['announced'].split('.')[0]})")
+
+
+def check_views(page):
+    """What each arrangement gained, held to something checkable.
+
+    Spacing is a real number: tighter packing has to make the arrangement smaller,
+    or the control is a label on nothing. Measured as the width of the laid-out grid,
+    which is the thing a reader sees change.
+
+    The rolled-up cluster tail has to open into more blocks than it replaced —
+    twelve models plus "the rest" is a good first view and a bad only view.
+
+    And the keyboard cursor has to keep its tile on screen, because that is what makes
+    the arrows a way of travelling the helix rather than of losing your place in it.
+    """
+    res = page.evaluate("""async () => {
+      const A = window.__atlas;
+      const span = () => {                       // how wide the arrangement sits
+        const p = A.positions, n = A.counts.instances;
+        let lo = 1e9, hi = -1e9;
+        for (let i = 0; i < n; i++) { const x = p[i * 3]; if (x < lo) lo = x; if (x > hi) hi = x; }
+        return +(hi - lo).toFixed(1);
+      };
+      const out = {};
+      A.clearHighlight();
+
+      A.setDensity('default'); A.setLayout('grid', true); out.wDefault = span();
+      A.setDensity('poster');  A.setLayout('grid', true); out.wPoster  = span();
+      A.setDensity('comfortable'); A.setLayout('grid', true); out.wAiry = span();
+      A.setDensity('default');
+
+      A.setLayout('clusters', true);
+      out.blocksClosed = A.labels().length;
+      A.setTail(true);
+      A.setLayout('clusters', true);
+      out.blocksOpen = A.labels().length;
+      A.setTail(false);
+
+      // the cursor has to drag the view along with it
+      A.setLayout('helix', true);
+      A.park(0, 0, 130);
+      const before = [A.camera.position.x, A.camera.position.y, A.camera.position.z].join();
+      // The cursor calls are synchronous; the flight they start lands on a later
+      // tick, so reading the camera immediately reads it before it has moved.
+      for (let k = 0; k < 60; k++) { A.cursor(1); await new Promise(r => setTimeout(r, 4)); }
+      await new Promise(r => setTimeout(r, 300));
+      const after = [A.camera.position.x, A.camera.position.y, A.camera.position.z].join();
+      out.cameraFollowed = before !== after;
+
+      A.clearHighlight();
+      return out;
+    }""")
+
+    if not (res["wPoster"] < res["wDefault"] < res["wAiry"]):
+        sys.exit(f"views: spacing does not change the size of the arrangement — "
+                 f"tight {res['wPoster']}, default {res['wDefault']}, airy {res['wAiry']}")
+    if res["blocksOpen"] <= res["blocksClosed"]:
+        sys.exit(f"views: opening the cluster tail produced {res['blocksOpen']} blocks "
+                 f"against {res['blocksClosed']} closed — it did not open")
+    if not res["cameraFollowed"]:
+        sys.exit("views: the keyboard cursor walked 60 tiles down the helix and the "
+                 "camera never moved — the arrows lose your place instead of travelling")
+    print(f"  views: spacing {res['wPoster']}/{res['wDefault']}/{res['wAiry']} units wide, "
+          f"cluster tail opens {res['blocksClosed']}->{res['blocksOpen']} blocks, "
+          f"cursor drags the camera")
 
 
 def check_preview(page):
@@ -1091,6 +1174,7 @@ def capture(backend, scenes, timeout_s=90):
         check_labels(page)
         check_compare(page)
         check_preview(page)
+        check_views(page)
         check_keyboard(page)
         check_url(browser, url, {"width": 1280, "height": 800})
         browser.close()

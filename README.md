@@ -459,6 +459,22 @@ while the panel is open, and the position reads `n of m` within the current filt
 within the corpus. The model, tool and style pills apply themselves as filters; the subject
 and kind pills stay inert rather than pretending to be clickable.
 
+**Spacing is a control.** Tiles sat 1.5 tile-widths apart — half a tile of air between
+every pair, which reads as a diagram rather than a wall of images. Tight packs them to
+1.12, airy opens them to 1.7, and the sphere and helix follow the same number so an
+arrangement is packed consistently however it is shaped. Measured across the grid: 82.9,
+111 and 125.8 units wide.
+
+**The rolled-up cluster tail opens.** Twelve models plus *"the rest"* is the right first
+view — one model holds 1,335 of 2,936 records and the tail is long and thin — but the rest
+is 28 models somebody may want. Clicking it opens them into their own blocks, 13 → 41.
+
+**The keyboard cursor drags the view with it.** Arrows walk the laid-out order, so on the
+helix that runs down the spine and on the sphere it walks the shell — and the camera now
+pans to keep the cursor's tile on screen rather than letting it wander off the back. That
+is what makes the arrows a way of travelling an arrangement instead of losing your place
+in it. A pan, not a zoom: flying to each tile would turn a scrub into a fairground ride.
+
 **Cluster labels are controls, not captions.** Clicking one in *By model* isolates that
 model and reframes. A heading that tells you a model holds 1,335 records and cannot show
 you them is describing the work rather than doing it. The rolled-up *"12 smaller models"*
@@ -753,7 +769,8 @@ tolerance, and they hold anywhere the code runs:
 | compare | two or more records switch the rail, every one is shown, the cap of six holds, and opening a record clears it |
 | url | a view driven in one page reopens identically in a fresh one, from the link alone |
 | detail nav | stepping follows the laid-out order, clamps at both ends, and counts within the filter |
-| labels | every cluster label isolates the model it names and returns exactly the count it claims; the rolled-up tail stays inert |
+| views | spacing changes the size of the arrangement, the cluster tail opens into more blocks than it replaced, and the cursor drags the camera |
+| labels | they are drawn at full opacity once settled, and every one isolates the model it names and returns exactly the count it claims; the rolled-up tail stays inert |
 | audio | the graph builds, costs nothing while off, 500 impacts in one window make at most 5 voices, each positioned one gets exactly one panner, and the listener follows where it is put |
 
 Each earned itself. Picking's edge probe caught a broad-phase radius tightened from 0.92
