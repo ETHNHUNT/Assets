@@ -392,6 +392,13 @@ async function boot() {
         }));
       },
       isolate(key) { isolateModel(key); return $('#count').textContent; },
+      /** The shareable part of the URL — everything but the flags. */
+      get url() {
+        const p = new URLSearchParams(location.search);
+        for (const k of ['webgl', 'dust', 'audio', 'seed', 'physics', 'physmax', 'lod', 'bloom'])
+          p.delete(k);
+        return { query: p.toString(), hash: location.hash };
+      },
       /** Step the open record through the filtered set, as the arrows do. */
       step(delta) { stepDetail(delta); return $('#dpos').textContent; },
       get nav() {
@@ -742,6 +749,66 @@ function cmpText(x, y) {
 }
 
 let sortBy = '';
+
+/**
+ * The parts of the view that belong in the URL, and what they are called there.
+ *
+ * Selection already lived in the hash. This adds the rest of what makes a view a
+ * view, so "grid, Wan 2.5, cinematic, sorted by length, this record" is a link
+ * rather than a set of instructions.
+ *
+ * Kept out of the hash deliberately: the hash is the record, and the panel's history
+ * rule depends on it being only that — one entry for the panel, replaced as you step.
+ * Filters live in the query string alongside the feature flags, which is also why
+ * every key here is spelled differently from a flag.
+ */
+const URL_KEYS = {
+  mode: () => (mode === 'grid' ? '' : mode),
+  q: () => $('#q').value.trim(),
+  tool: () => $('#f-tool').value,
+  // The no-model sentinel is a control character, which has no business in a URL.
+  model: () => ($('#f-model').value === NO_MODEL ? 'none' : $('#f-model').value),
+  style: () => $('#f-style').value,
+  kind: () => $('#f-kind').value,
+  sort: () => sortBy,
+};
+
+/** Write the current view into the query string, leaving flags and the hash alone. */
+function syncURL() {
+  const p = new URLSearchParams(location.search);
+  for (const [k, read] of Object.entries(URL_KEYS)) {
+    const v = read();
+    if (v) p.set(k, v); else p.delete(k);
+  }
+  const qs = p.toString();
+  history.replaceState(history.state, '',
+    location.pathname + (qs ? '?' + qs : '') + location.hash);
+}
+
+/**
+ * Apply whatever the URL asked for, before the first layout.
+ *
+ * Silently ignores anything that does not correspond to a real option — a stale link
+ * naming a model that no longer exists should open the atlas, not an empty one.
+ */
+function readURL() {
+  const p = new URLSearchParams(location.search);
+  const put = (sel, v) => {
+    if (!v) return;
+    const el = $(sel);
+    if ([...el.options].some((o) => o.value === v)) el.value = v;
+  };
+  if (p.get('mode') && MODES[p.get('mode')]) mode = p.get('mode');
+  if (p.get('q')) $('#q').value = p.get('q');
+  put('#f-tool', p.get('tool'));
+  put('#f-model', p.get('model') === 'none' ? NO_MODEL : p.get('model'));
+  put('#f-style', p.get('style'));
+  put('#f-kind', p.get('kind'));
+  if (p.get('sort') && SORTS[p.get('sort')] !== undefined) {
+    sortBy = p.get('sort');
+    $('#f-sort').value = sortBy;
+  }
+}
 
 function activeList() {
   const a = [];
@@ -1196,6 +1263,7 @@ function buildUI() {
     b.onclick = async () => {
       [...modes.children].forEach((c) => c.classList.toggle('on', c === b));
       layout(k);
+      syncURL();
       frameCamera(k === 'clusters' ? new THREE.Vector3(0, 0.13, 1) : undefined);
     };
     modes.appendChild(b);
@@ -1214,7 +1282,7 @@ function buildUI() {
     el.onchange = applyFilters;
   }
   $('#f-kind').onchange = applyFilters;
-  $('#f-sort').onchange = () => { sortBy = $('#f-sort').value; layout(null); };
+  $('#f-sort').onchange = () => { sortBy = $('#f-sort').value; layout(null); syncURL(); };
 
   $('#dprev').onclick = () => stepDetail(-1);
   $('#dnext').onclick = () => stepDetail(1);
@@ -1280,6 +1348,13 @@ function buildUI() {
     renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     renderer.setSize(innerWidth, innerHeight);
   }, 140));
+
+  // After the selects are populated, so a link naming a model can be matched against
+  // real options, and before the first applyFilters so the atlas opens on the view
+  // the link asked for rather than snapping to it a frame later.
+  readURL();
+  [...$('#modes').children].forEach((c) => c.classList.toggle('on', c.dataset.mode === mode));
+  $('#f-sort').value = sortBy;
   applyFilters();
 }
 
@@ -1305,6 +1380,7 @@ function applyFilters() {
   highlight.stageSweep(posCur, controls.target);
   highlight.invalidate();
   if ($('#detail').classList.contains('open')) updateDetailNav();
+  syncURL();
   $('#count').textContent = `${n.toLocaleString()} of ${N.toLocaleString()}`;
   $('#empty').classList.toggle('on', n === 0);
   const wasNarrow = lastCount <= N * 0.25, isNarrow = n <= N * 0.25;

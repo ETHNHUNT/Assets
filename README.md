@@ -390,6 +390,14 @@ It has to be served over HTTP. Opening `web/index.html` from disk fails twice ov
 | **Helix** | a spiral column you can fly down |
 | **By model** | the twelve largest models as labelled blocks, the tail rolled into one — small multiples, so block sizes compare directly |
 
+**A view is a link.** Mode, search, all four filters and the sort order live in the query
+string, and the open record in the hash, so *"sphere, Wan 2.5, sorted by length, this
+record"* is something you can send rather than describe. Anything in the URL that no longer
+matches a real option is ignored, so a stale link opens the atlas rather than an empty one.
+
+The filters deliberately stay out of the hash: the hash is the record, and the panel's
+one-entry history rule depends on it being only that.
+
 **The detail panel is not a dead end.** Prev/next step through the filtered set in the
 order the tiles were laid out — so *next* means what is next on screen, under whatever sort
 is active, rather than whatever the records happen to be stored as. Arrow keys do the same
@@ -686,6 +694,7 @@ tolerance, and they hold anywhere the code runs:
 | framing | frame each arrangement, let the flight land, and every visible tile must project inside NDC |
 | detail panel | 12 selections must leave **one** history entry, and each must show the record it was asked for |
 | sort | ordering by length is monotonic across the laid-out sequence, and actually moves tiles |
+| url | a view driven in one page reopens identically in a fresh one, from the link alone |
 | detail nav | stepping follows the laid-out order, clamps at both ends, and counts within the filter |
 | labels | every cluster label isolates the model it names and returns exactly the count it claims; the rolled-up tail stays inert |
 | audio | the graph builds, costs nothing while off, 500 impacts in one window make at most 5 voices, each positioned one gets exactly one panner, and the listener follows where it is put |
