@@ -304,6 +304,21 @@ async function boot() {
       get settled() { return morphCtl.settled; },
       get physicsWorld() { return physics; },
       get highlight() { return highlight; },
+
+      /**
+       * Drive the filter and the hover the way a person does, minus the parts a test
+       * cannot wait on. setFilter writes the same input applyFilters() reads and calls
+       * it directly, so it takes the real path without the 180 ms debounce; hover sets
+       * what pick() would have set had the pointer been over tile i.
+       *
+       * These exist because the two lanes highlight.js owns are invisible to a plain
+       * capture: nothing in a parked scene is filtered or hovered, so dim sits at 1 and
+       * focus at 0 and the easing never runs. A baseline without them proves only that
+       * everything else still draws.
+       */
+      setFilter(q) { $('#q').value = q; applyFilters(); return $('#count').textContent; },
+      hover(i) { hovered = i; highlight.invalidate(); },
+      clearHighlight() { hovered = -1; selected = -1; $('#q').value = ''; applyFilters(); },
       get flags() { return { ...FLAGS }; },
       get counts() { return { instances: N, active: active.reduce((a, v) => a + v, 0) }; },
     };
