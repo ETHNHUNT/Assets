@@ -556,18 +556,21 @@ one attribute at a time is what found it; nothing else pointed at the cause.
 ### The modules
 
 `web/app.js` was 1,673 lines in which layout, morph, physics and the LOD cache all wrote the
-same five instance buffers. It is now the shell — boot, material, picking, UI, camera — and
-each writer is its own file:
+same five instance buffers. It is now 1,208 — boot, the render pipeline, the DOM and
+the detail panel — and everything else is its own file:
 
 | File | Owns | Lines |
 |---|---|---|
-| `app.js` | boot, TSL material, picking, DOM, camera flight | 1,320 |
-| `morph.js` | `MorphController` — `posCur`/`posTo`/`quatCur`/`quatTo`, the A/B upload, the stagger, the anime.js clock | 215 |
+| `app.js` | boot, render pipeline, DOM, filters, the detail panel | 1,208 |
+| `morph.js` | `MorphController` — the four position buffers, the A/B upload, the stagger, the anime.js clock | 215 |
 | `detail.js` | `DetailCache` — the full-res cell texture, election, cross-fade | 210 |
 | `audio.js` | `AtlasAudio` — procedural sound | 201 |
 | `layouts.js` | the six arrangements, as pure maths | 182 |
 | `physics.js` | `PhysicsWorld` — the rigid-body pile | 164 |
+| `camera.js` | `fitDistance` and `CameraFlight` — how far back, and getting there | 118 |
 | `highlight.js` | `Highlight` — the dim and focus sweep | 115 |
+| `material.js` | the tile shader, as one TSL node graph | 101 |
+| `picking.js` | `Picker` — the two-stage ray test | 97 |
 
 The boundaries are drawn on **who writes which lane of which buffer**, not on what reads
 nicely. WebGPU guarantees only eight vertex buffers and the geometry spends two, so every
@@ -643,6 +646,24 @@ exercise a subsystem now proves it did.
 it guards against strands exactly one tile in 2,936 and that moves no luma cell past a
 tolerance of 3. It also turns reduced motion back off for itself — the only place that
 should happen — since otherwise the very path it tests does not run.
+
+### Three checks that need no baseline at all
+
+Not everything worth verifying is a colour. Three subsystems are checked by round trip
+or postcondition instead, which makes them machine-independent — no per-machine file, no
+tolerance, and they hold anywhere the code runs:
+
+| Check | Asks |
+|---|---|
+| picking | project a tile's centre, aim there, and it must pick that tile — plus just inside its edge, and *not* from the gap past it |
+| framing | frame each arrangement, let the flight land, and every visible tile must project inside NDC |
+| detail panel | 12 selections must leave **one** history entry, and each must show the record it was asked for |
+
+Each earned itself. Picking's edge probe caught a broad-phase radius tightened from 0.92
+to 0.30 that a centre-only test passed happily. Framing caught the camera never moving at
+all under `prefers-reduced-motion`. The panel's history rule is the one in the code
+comment — forty records must not cost forty presses of Back — and nothing else was
+holding it.
 
 ### The camera has to be nailed down, and once was not
 

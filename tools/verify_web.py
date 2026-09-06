@@ -154,6 +154,64 @@ def serve(port):
     return httpd
 
 
+def check_detail_panel(page, runs=12):
+    """The detail panel, including the history rule that is invisible from the code.
+
+    Selecting a record opens the panel and pushes one history entry. Selecting another
+    must REPLACE that entry rather than push a second, because on a phone the panel is
+    a full-screen takeover and Back is how it is dismissed — stepping back through
+    forty records to escape is not what anyone means by that. So forty selections owe
+    exactly one entry, and nothing about reading selectIndex makes that obvious enough
+    to stay true through a refactor.
+
+    The rest is content: the panel must show the record that was asked for, and the
+    copy button must be absent for the presets that publish no prompt text.
+    """
+    res = page.evaluate("""([runs]) => {
+      const A = window.__atlas;
+      A.clearHighlight();
+      A.setLayout('grid', true);
+      const before = history.length;
+      const seen = [];
+      for (let k = 0; k < runs; k++) {
+        const i = k * 137 % A.counts.instances;
+        A.select(i);
+        const p = A.panel;
+        seen.push({ i, open: p.open, selected: p.selected, rid: p.rid,
+                    hash: p.hash, tags: p.tags, copyShown: p.copyShown,
+                    promptLen: p.prompt.length });
+      }
+      const afterSelects = history.length;
+      A.closePanel();
+      const closed = A.panel;
+      return { before, afterSelects, pushed: afterSelects - before,
+               closedOpen: closed.open, closedSelected: closed.selected, seen };
+    }""", [runs])
+
+    if res["pushed"] > 1:
+        sys.exit(f"detail panel: {runs} selections pushed {res['pushed']} history entries. "
+                 f"The panel owes one, so Back dismisses it instead of walking back "
+                 f"through every record that was opened.")
+    if res["closedOpen"] or res["closedSelected"] != -1:
+        sys.exit(f"detail panel: still open after close "
+                 f"(open={res['closedOpen']}, selected={res['closedSelected']})")
+
+    wrong = [s for s in res["seen"] if not s["open"] or s["selected"] != s["i"]]
+    if wrong:
+        sys.exit(f"detail panel: did not open on the record asked for, e.g. {wrong[:3]}")
+    stale = [s for s in res["seen"] if s["hash"] != "#" + s["rid"]]
+    if stale:
+        sys.exit(f"detail panel: the URL does not name the record shown, e.g. {stale[:3]}")
+    empty = [s for s in res["seen"] if s["copyShown"] and s["promptLen"] == 0]
+    if empty:
+        sys.exit(f"detail panel: copy offered for a record with no prompt text, "
+                 f"e.g. {empty[:3]}")
+    nprompt = sum(1 for s in res["seen"] if s["promptLen"] > 0)
+    print(f"  detail panel: {len(res['seen'])} records shown correctly, "
+          f"{res['pushed']} history entry for all of them "
+          f"({nprompt} with prompt text), closes clean")
+
+
 def check_framing(page, modes=("grid", "sphere", "helix", "towers")):
     """Framing an arrangement must actually fit it on screen.
 
@@ -533,6 +591,7 @@ def capture(backend, scenes, timeout_s=90):
         # else's fog. That read as maxD 173 across the board — the scenes were fine and
         # the check had moved the weather.
         check_framing(page)
+        check_detail_panel(page)
         browser.close()
     httpd.shutdown()
     if errors:
