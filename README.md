@@ -390,6 +390,20 @@ It has to be served over HTTP. Opening `web/index.html` from disk fails twice ov
 | **Helix** | a spiral column you can fly down |
 | **By model** | the twelve largest models as labelled blocks, the tail rolled into one — small multiples, so block sizes compare directly |
 
+**Cluster labels are controls, not captions.** Clicking one in *By model* isolates that
+model and reframes. A heading that tells you a model holds 1,335 records and cannot show
+you them is describing the work rather than doing it. The rolled-up *"12 smaller models"*
+block is deliberately inert — it names a bucket, not a model, and expanding it into a
+second level is a different job.
+
+That change needed a filter value that did not exist. 514 records carry no model, the
+clusters view already gives them a labelled block, and an empty string cannot ask for them
+because that is what the model filter uses for *any* model. So there is now an explicit
+**No model attributed** option. Without it, clicking a label promising 514 records handed
+back all 2,936 — the select silently fell back to *All models*, which is what the check
+comparing a label's stated count against what isolating it returns was written to catch,
+and did.
+
 A fifth control sits under the filters: **order**. The atlas was always sorted — the build
 orders records by tool type then model — but fixedly and invisibly, which on 2,936 tiles
 reads the same as unordered, because you cannot scan a wall whose sequence you cannot
@@ -665,6 +679,7 @@ tolerance, and they hold anywhere the code runs:
 | framing | frame each arrangement, let the flight land, and every visible tile must project inside NDC |
 | detail panel | 12 selections must leave **one** history entry, and each must show the record it was asked for |
 | sort | ordering by length is monotonic across the laid-out sequence, and actually moves tiles |
+| labels | every cluster label isolates the model it names and returns exactly the count it claims; the rolled-up tail stays inert |
 | audio | the graph builds, costs nothing while off, 500 impacts in one window make at most 5 voices, each positioned one gets exactly one panner, and the listener follows where it is put |
 
 Each earned itself. Picking's edge probe caught a broad-phase radius tightened from 0.92

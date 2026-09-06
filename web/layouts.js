@@ -19,6 +19,9 @@ import * as THREE from 'three';
 /** No rotation. Shared, so never mutate it. */
 export const FLAT = new THREE.Quaternion();
 
+/** Shown on the block for records carrying no model; app.js maps it to a filter value. */
+export const NO_MODEL_LABEL = 'no model attributed';
+
 /**
  * @param mode      grid | sphere | helix | clusters
  * @param total     instance count, i.e. every record whether visible or not
@@ -77,20 +80,27 @@ export function computeLayout(mode, { total, list, records, viewAspect, posCur }
   } else if (mode === 'clusters') {
     const groups = new Map();
     for (const idx of list) {
-      const k = records[idx].m || 'no model attributed';
+      const k = records[idx].m || NO_MODEL_LABEL;
       if (!groups.has(k)) groups.set(k, []);
       groups.get(k).push(idx);
     }
     // 51 models side by side leaves every tile a speck. Keep the largest
     // groups legible and roll the long tail into one bucket.
     let keys = [...groups.keys()].sort((a, b) => groups.get(b).length - groups.get(a).length);
+    let tailLabel = null;
     const CAP = 12;
     if (keys.length > CAP) {
       const tail = keys.slice(CAP);
       const rest = tail.flatMap((k) => groups.get(k));
       tail.forEach((k) => groups.delete(k));
       keys = keys.slice(0, CAP);
-      if (rest.length) { const label = `${tail.length} smaller models`; groups.set(label, rest); keys.push(label); }
+      // The tail is a bucket, not a model, so it carries no key and is not clickable —
+      // isolating "12 smaller models" would filter to a model of that name and match
+      // nothing. Expanding it into a second level is a separate job.
+      if (rest.length) {
+        const label = `${tail.length} smaller models`;
+        groups.set(label, rest); keys.push(label); tailLabel = label;
+      }
     }
 
     // Small multiples, not a ring. One model holds 1,338 of the 2,619 records,
@@ -132,6 +142,7 @@ export function computeLayout(mode, { total, list, records, viewAspect, posCur }
                       cy - (r - d.rows / 2 + 0.5) * PITCH, 0, FLAT];
         });
         labels.push({ text: k, count: members.length, q: FLAT, maxW: d.w + GAP_X * 0.8,
+                      key: k === tailLabel ? null : k,
                            pos: new THREE.Vector3(cx, cy + d.h / 2 + 2.9, 0) });
       });
       y = bottom;
