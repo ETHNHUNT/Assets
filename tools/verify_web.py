@@ -154,6 +154,80 @@ def serve(port):
     return httpd
 
 
+def check_picking(page, sample=240):
+    """Every tile must be pickable at its own centre.
+
+    Picking is the one subsystem no scene covers, and a signature never could: it is a
+    ray test against posCur, and its output is an index rather than a colour. A tile
+    can stop being clickable without a single pixel moving.
+
+    The check is a round trip. Project a tile's centre to NDC through the camera, aim
+    there, and picking has to return that tile. Both halves are pure maths, so unlike a
+    rendered frame the answer is identical on every machine — no baseline, no tolerance,
+    no per-machine file.
+
+    Tiles outside the frustum are skipped rather than counted as failures; the grid is
+    wider than the view and a tile that is not on screen is not expected to be pickable.
+    """
+    res = page.evaluate("""([sample]) => {
+      const A = window.__atlas;
+      A.setLayout('grid', true);
+      A.park(0, 0, 96);
+      const n = A.counts.instances, step = Math.max(1, Math.floor(n / sample));
+      const half = A.highlight.halfSize(0);   // grid tiles are unfocused and lit: 0.5
+      let tested = 0, offscreen = 0;
+      const wrong = [], edgeWrong = [], gapWrong = [];
+
+      // Aiming at a centre proves less than it looks: the ray passes ~0 from the tile,
+      // so any broad-phase radius above zero accepts it and any half-extent above zero
+      // contains it. The two offset probes are what actually exercise those numbers —
+      // just inside the tile's own edge, and out in the gap past it.
+      for (let i = 0; i < n; i += step) {
+        const c = A.project(i);
+        if (Math.abs(c[0]) > 0.9 || Math.abs(c[1]) > 0.9) { offscreen++; continue; }
+        tested++;
+        if (A.pickAt(c[0], c[1]) !== i) wrong.push([i, A.pickAt(c[0], c[1])]);
+
+        // NDC per world unit at this depth, measured off the neighbouring tile rather
+        // than derived from the projection matrix
+        const scale = (A.project(i + 1)[0] - c[0]);   // one grid step = 1.5 world units
+        const perUnit = Math.abs(scale) / 1.5;
+        if (!isFinite(perUnit) || perUnit <= 0) continue;
+
+        const inX = c[0] + perUnit * half * 0.80;     // inside the tile
+        if (A.pickAt(inX, c[1]) !== i) edgeWrong.push([i, A.pickAt(inX, c[1])]);
+
+        const outX = c[0] + perUnit * half * 1.60;    // past the edge, into the gap
+        if (A.pickAt(outX, c[1]) === i) gapWrong.push(i);
+      }
+      A.pickAt(-9, -9);                       // leave no hover behind
+      return { tested, offscreen, half,
+               wrong: wrong.slice(0, 6), wrongCount: wrong.length,
+               edgeWrong: edgeWrong.slice(0, 6), edgeWrongCount: edgeWrong.length,
+               gapWrong: gapWrong.slice(0, 6), gapWrongCount: gapWrong.length };
+    }""", [sample])
+    if not res["tested"]:
+        sys.exit("picking: every sampled tile was off screen — the check proved nothing")
+    if res["wrongCount"]:
+        sys.exit(f"picking: {res['wrongCount']} of {res['tested']} tiles did not pick "
+                 f"themselves at their own centre, e.g. {res['wrong']}")
+    # State what was seen, not why. The pairs say it better than a guess would: -1 is a
+    # ray that found nothing, and i+1 is a neighbour winning a point that should have
+    # been inside tile i — which happens when the half-extent grows past the midpoint
+    # between tiles, the opposite cause from a ray that reaches nothing.
+    if res["edgeWrongCount"]:
+        sys.exit(f"picking: {res['edgeWrongCount']} of {res['tested']} tiles did not pick "
+                 f"themselves just inside their own edge, e.g. {res['edgeWrong']} "
+                 f"(as [aimed at, got]; -1 means nothing was hit). Suspect the broad-phase "
+                 f"radius or Highlight.halfSize.")
+    if res["gapWrongCount"]:
+        sys.exit(f"picking: {res['gapWrongCount']} of {res['tested']} tiles were picked "
+                 f"from the gap past their own edge, e.g. {res['gapWrong']}. The tile is "
+                 f"claiming more area than it draws.")
+    print(f"  picking: {res['tested']} tiles pick themselves at centre, inside the edge, "
+          f"and not from the gap (half {res['half']}, {res['offscreen']} off screen)")
+
+
 def settle_highlight(page, name, tries=400, expect_moved=True):
     """Wait for the dim/focus sweep to finish, and prove it actually ran.
 
@@ -344,6 +418,8 @@ def capture(backend, scenes, timeout_s=90):
             browser.close(); httpd.shutdown()
             sys.exit("WebGPU resolved to SwiftShader, a software adapter — refusing to "
                      "use the frame. This means Chrome found no usable GPU.")
+
+        check_picking(page)
 
         for name, mode, (x, y, z), steps, setup in scenes:
             # Highlight state is global and outlives a scene, so reset before each one.
