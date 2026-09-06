@@ -20,6 +20,7 @@ import { bloom } from 'three/addons/tsl/display/BloomNode.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { animate, createSpring } from 'animejs';
 import { AtlasAudio } from './audio.js';
+import { PhysicsWorld } from './physics.js';
 
 // --------------------------------------------------------------- flags ------
 /**
@@ -273,9 +274,9 @@ async function boot() {
         layout(from, true);
         layout('physics', true);
         await startPhysics();
-        if (!physReady) return null;
-        for (let k = 0; k < steps; k++) stepPhysics();
-        return { bodies: bodies.size, steps, seeded: FLAGS.seed !== null };
+        if (!physics.ready) return null;
+        for (let k = 0; k < steps; k++) physics.step();
+        return { bodies: physics.count, steps, seeded: FLAGS.seed !== null };
       },
       /** Place the camera deterministically — OrbitControls damping never settles on its own. */
       park(x, y, z) {
@@ -1059,115 +1060,38 @@ function bakeCurrent() {
 }
 
 // ------------------------------------------------------------- physics ------
-// Rapier is a ~3 MB wasm bundle, so it is only fetched when physics is entered.
-let RAPIER = null, world = null, bodies = null, ground = null, physReady = false;
-let events = null;
+// The pile owns posCur/quatCur while it runs; see web/physics.js. It is built
+// lazily because the arrays it writes do not exist until buildScene().
+let physics = null;
 
-// Measured, not guessed: with the threshold at zero, 9 s of a collapsing pile
-// produced 681 contact events spanning 0 to 2.4 N — these tiles are thin and
-// light. 0.9 keeps the ~20% that read as real knocks; 2.5 maps the hardest of
-// them to full loudness.
-const CONTACT_THRESHOLD = 0.9;
-const IMPACT_SCALE = 2.5;
-
-function simdSupported() {
-  try {
-    return WebAssembly.validate(new Uint8Array(
-      [0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11]));
-  } catch { return false; }
+function makePhysics() {
+  return new PhysicsWorld({
+    posCur, quatCur, audio,
+    onStep: writeMatrices,          // the sim writes positions; the caller uploads them
+    rng: stream(),
+  });
 }
 
+/** Enter physics: pick the bodies, show the loading bar if the engine is cold. */
 async function startPhysics() {
   if (!FLAGS.physics) return;            // ?physics=0 — refuse before loading the engine
   const list = physList || activeList();
   if (!list.length) return;
-  if (!RAPIER) {
+  if (!physics) physics = makePhysics();
+
+  if (!PhysicsWorld.loaded) {
     lmsg.textContent = 'loading physics';
     $('#load').classList.remove('gone');
     step(30, 'loading physics engine');
-    const url = simdSupported() ? './vendor/rapier-simd.mjs' : './vendor/rapier-plain.mjs';
-    RAPIER = (await import(url)).default;
-    await RAPIER.init();
+    await PhysicsWorld.load();
     step(100, 'ready');
     setTimeout(() => $('#load').classList.add('gone'), 200);
   }
-  stopPhysics();
-
-  world = new RAPIER.World({ x: 0, y: -24, z: 0 });
-  // Contact-force events with a threshold, not raw collision events: a 2,619
-  // body pile generates thousands of touches a frame, and only the hard ones
-  // are worth hearing.
-  events = new RAPIER.EventQueue(true);
-  const FLOOR = -26, W = 78;
-  ground = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(0, FLOOR - 1, 0));
-  world.createCollider(RAPIER.ColliderDesc.cuboid(W, 1, W), ground);
-  for (const [x, z, hx, hz] of [[W, 0, 1, W], [-W, 0, 1, W], [0, W, W, 1], [0, -W, W, 1]]) {
-    const b = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(x, FLOOR + 30, z));
-    world.createCollider(RAPIER.ColliderDesc.cuboid(hx, 32, hz), b);
-  }
-
-  bodies = new Map();
-  // A fresh stream per start: the same seed rebuilds the same pile, whatever else
-  // has drawn from Math.random() in between.
-  const rnd = stream();
-  for (const i of list) {
-    const a = i * 3;
-    const rb = world.createRigidBody(
-      RAPIER.RigidBodyDesc.dynamic()
-        .setTranslation(posCur[a], Math.max(posCur[a + 1], FLOOR + 3), posCur[a + 2])
-        .setLinearDamping(0.16).setAngularDamping(0.28));
-    const col = RAPIER.ColliderDesc.cuboid(0.5, 0.5, 0.05).setRestitution(0.22).setFriction(0.85)
-      .setActiveEvents(RAPIER.ActiveEvents.CONTACT_FORCE_EVENTS)
-      .setContactForceEventThreshold(CONTACT_THRESHOLD);
-    world.createCollider(col, rb);
-    rb.setAngvel({ x: (rnd() - .5) * 2, y: (rnd() - .5) * 2, z: (rnd() - .5) * 2 }, true);
-    bodies.set(i, rb);
-  }
-  physReady = true;
+  await physics.start(list);
   morph = 1;
 }
 
-function stopPhysics() {
-  if (world) { world.free(); world = null; }
-  if (events) { events.free(); events = null; }
-  bodies = null; ground = null; physReady = false;
-}
-
-function stepPhysics() {
-  if (!physReady) return;
-  world.step(events);
-  if (audio.on) {
-    let heard = 0;
-    events.drainContactForceEvents((e) => {
-      const f = e.totalForceMagnitude();
-      if (heard++ > 4) return;                       // the voice cap does the rest
-      audio.impact(Math.min(1, f / IMPACT_SCALE));
-    });
-  } else {
-    events.drainContactForceEvents(() => {});        // must drain or it grows
-  }
-  for (const [i, rb] of bodies) {
-    const t = rb.translation(), r = rb.rotation();
-    const a = i * 3, b = i * 4;
-    posCur[a] = t.x; posCur[a + 1] = t.y; posCur[a + 2] = t.z;
-    quatCur[b] = r.x; quatCur[b + 1] = r.y; quatCur[b + 2] = r.z; quatCur[b + 3] = r.w;
-  }
-  writeMatrices();
-}
-
-/** Radial shove — the pile is meant to be disturbed. */
-function shove(center, strength = 110, radius = 26) {
-  if (!physReady) return;
-  for (const rb of bodies.values()) {
-    const t = rb.translation();
-    const dx = t.x - center.x, dy = t.y - center.y, dz = t.z - center.z;
-    const d2 = dx * dx + dy * dy + dz * dz;
-    if (d2 > radius * radius) continue;
-    const d = Math.sqrt(d2) || 0.001;
-    const f = strength * (1 - d / radius) / d;
-    rb.applyImpulse({ x: dx * f, y: dy * f + strength * 0.22, z: dz * f }, true);
-  }
-}
+function stopPhysics() { if (physics) physics.stop(); }
 
 // --------------------------------------------------------------- picking ----
 const ray = new THREE.Raycaster();
@@ -1215,10 +1139,10 @@ addEventListener('pointerup', (e) => {
   if (id >= 0) {
     hovered = id; easeSettled = false;
     selectIndex(id);
-  } else if (physReady) {                      // empty space in physics mode: shove
+  } else if (physics?.ready) {                 // empty space in physics mode: shove
     ray.setFromCamera(ptr, camera);
     const at = new THREE.Vector3();
-    if (ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 20), at)) shove(at);
+    if (ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 20), at)) physics.shove(at);
   }
 });
 
@@ -1342,7 +1266,7 @@ function selectById(id, instant) {
 function frameCamera(preferDir) {
   const box = new THREE.Box3();
   const v = new THREE.Vector3();
-  const src = physReady ? posCur : posTo;   // the sim owns positions in physics mode
+  const src = physics?.ready ? posCur : posTo;   // the sim owns positions in physics mode
   let any = false;
   for (let i = 0; i < N; i++) {
     if (!active[i]) continue;
@@ -1471,7 +1395,7 @@ function buildUI() {
         frameCamera(elevated);
         // the pile spreads as it falls, so fit it again once it has settled
         clearTimeout(physFrameTimer);
-        physFrameTimer = setTimeout(() => { if (physReady) frameCamera(elevated); }, 2600);
+        physFrameTimer = setTimeout(() => { if (physics?.ready) frameCamera(elevated); }, 2600);
       }
       else {
         layout(k);
@@ -1662,7 +1586,7 @@ function tick() {
   }
   if (touched) aMeta.needsUpdate = true; else easeSettled = true;
 
-  if (physReady) stepPhysics();
+  if (physics?.ready) physics.step();
 
   // re-elect cache holders a few times a second; walking every record and
   // re-uploading the cache texture is not worth doing per frame
@@ -1684,7 +1608,7 @@ function tick() {
   }
 
   if (labelGroup) {
-    const a = physReady ? 0 : morph;
+    const a = physics?.ready ? 0 : morph;
     labelGroup.visible = a > 0.05;
     labelGroup.children.forEach((m) => {
       m.material.opacity = a;
@@ -1708,7 +1632,7 @@ function tick() {
     const held = DETAIL ? slotOwner.reduce((a, v) => a + (v >= 0 ? 1 : 0), 0) : 0;
     $('#fps').textContent = `${fps} fps · ${N.toLocaleString()} tiles · 1 draw call` +
       (DETAIL ? ` · ${held}/${DETAIL_SLOTS} full-res` : '') +
-      (physReady ? ` · ${bodies.size.toLocaleString()} rigid bodies` : '');
+      (physics?.ready ? ` · ${physics.count.toLocaleString()} rigid bodies` : '');
     fpsAcc = 0; fpsN = 0;
   }
 }
