@@ -769,7 +769,12 @@ function activeList() {
  * filtered-out record goes to, so the view stays coherent instead of leaving a
  * frozen grid hanging over the pile.
  */
-const PHYS_MAX = COARSE ? 1200 : Infinity;
+// A coarse pointer means a phone, where 1,200 bodies is already the ceiling. On a
+// desktop the cap exists to bound the collapse, not the steady state — see the
+// measurements in README section 7. ?physmax=<n> overrides it for profiling.
+const PHYS_MAX = PARAMS.has('physmax')
+  ? (parseInt(PARAMS.get('physmax'), 10) || Infinity)
+  : (COARSE ? 1200 : Infinity);
 let physList = null;
 
 function choosePhysList() {
